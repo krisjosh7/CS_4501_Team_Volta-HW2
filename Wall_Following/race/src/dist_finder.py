@@ -83,6 +83,9 @@ def callback(data):
 	CD = AB - forward_projection(math.sin(alpha))
 
 	error = desired_distance - CD
+	rospy.loginfo("DISTANCE TO RIGHT: " + str(b))
+	rospy.loginfo("DISTANCE AT ANGLE THETA: " + str(a))
+	rospy.loginfo("ERROR: " + error)
 
 	msg = pid_input()	# An empty msg is created of the type pid_input
 	# this is the error that you want to send to the PID for steering correction.
