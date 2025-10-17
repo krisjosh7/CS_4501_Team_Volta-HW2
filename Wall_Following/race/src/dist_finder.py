@@ -23,44 +23,14 @@ def getRange(data,angle):
     # Outputs length in meters to object with angle in lidar scan field of view
     # Make sure to take care of NaNs etc.
     
-	lidar_angle_deg = angle + 30.0
-
-	if lidar_angle_deg < 0.0:
-		lidar_angle_deg = 0.0
-	elif lidar_angle_deg > 240.0:
-		lidar_angle_deg = 240.0
 	
-	lidar_angle_rad = math.radians(lidar_angle_deg)
-	idx = int(round((lidar_angle_rad - data.angle_min) / data.angle_increment))
-
-	n = len(data.ranges)
-	if idx < 0:
-		idx = 0
-	elif idx >= n:
-		idx = n - 1
-
-	def is_valid(r):
-		return (
-            r is not None
-            and not math.isnan(r)
-            and not math.isinf(r)
-            and data.range_min <= r <= data.range_max
-        )
-	
+	angle_rad = math.radians((angle + 30))
+	idx = int(round((angle_rad) / data.angle_increment))
 	r = data.ranges[idx]
-	if is_valid(r):
-		return r
+	if math.isnan(r):
+		return 0.0
 	
-	window = 5  # look up to ±5 beams around idx
-	for offset in range(1, window + 1):
-		left = idx - offset
-		if left >= 0 and is_valid(data.ranges[left]):
-			return data.ranges[left]
-		right = idx + offset
-		if right < n and is_valid(data.ranges[right]):
-			return data.ranges[right]
-	
-	return data.range_max
+	return r
 
 
 
@@ -80,12 +50,12 @@ def callback(data):
 
 	AB = b * math.cos(alpha)
 
-	CD = AB - forward_projection(math.sin(alpha))
+	CD = AB - forward_projection * (math.sin(alpha))
 
 	error = desired_distance - CD
-	rospy.loginfo("DISTANCE TO RIGHT: " + str(b))
-	rospy.loginfo("DISTANCE AT ANGLE THETA: " + str(a))
-	rospy.loginfo("ERROR: " + error)
+	#rospy.loginfo("FIRST SCAN: " + str(data.ranges[0]))
+	#rospy.loginfo("LAST SCAN: " + str(data.ranges[len(data.ranges) - 1]))4
+	rospy.loginfo("dist at 0 : " + str(getRange(data, 0)))
 
 	msg = pid_input()	# An empty msg is created of the type pid_input
 	# this is the error that you want to send to the PID for steering correction.
