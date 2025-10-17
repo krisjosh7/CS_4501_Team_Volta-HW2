@@ -26,21 +26,21 @@ def getRange(data,angle):
 	lidar_angle_deg = angle + 30.0
 
 	if lidar_angle_deg < 0.0:
-        lidar_angle_deg = 0.0
-    elif lidar_angle_deg > 240.0:
-        lidar_angle_deg = 240.0
+		lidar_angle_deg = 0.0
+	elif lidar_angle_deg > 240.0:
+		lidar_angle_deg = 240.0
 	
 	lidar_angle_rad = math.radians(lidar_angle_deg)
 	idx = int(round((lidar_angle_rad - data.angle_min) / data.angle_increment))
 
 	n = len(data.ranges)
-    if idx < 0:
-        idx = 0
-    elif idx >= n:
-        idx = n - 1
+	if idx < 0:
+		idx = 0
+	elif idx >= n:
+		idx = n - 1
 
 	def is_valid(r):
-        return (
+		return (
             r is not None
             and not math.isnan(r)
             and not math.isinf(r)
@@ -48,17 +48,17 @@ def getRange(data,angle):
         )
 	
 	r = data.ranges[idx]
-    if is_valid(r):
-        return r
+	if is_valid(r):
+		return r
 	
 	window = 5  # look up to ±5 beams around idx
-    for offset in range(1, window + 1):
-        left = idx - offset
-        if left >= 0 and is_valid(data.ranges[left]):
-            return data.ranges[left]
-        right = idx + offset
-        if right < n and is_valid(data.ranges[right]):
-            return data.ranges[right]
+	for offset in range(1, window + 1):
+		left = idx - offset
+		if left >= 0 and is_valid(data.ranges[left]):
+			return data.ranges[left]
+		right = idx + offset
+		if right < n and is_valid(data.ranges[right]):
+			return data.ranges[right]
 	
 	return data.range_max
 
@@ -76,6 +76,14 @@ def callback(data):
 	# Compute Alpha, AB, and CD..and finally the error.
 	# TODO: implement
 
+	alpha = math.atan((a * math.cos(swing)) / (a * math.sin(swing)))
+
+	AB = b * math.cos(alpha)
+
+	CD = AB - forward_projection(math.sin(alpha))
+
+	error = desired_distance - CD
+
 	msg = pid_input()	# An empty msg is created of the type pid_input
 	# this is the error that you want to send to the PID for steering correction.
 	msg.pid_error = error
@@ -87,5 +95,5 @@ if __name__ == '__main__':
 	print("Hokuyo LIDAR node started")
 	rospy.init_node('dist_finder',anonymous = True)
 	# TODO: Make sure you are subscribing to the correct car_x/scan topic on your racecar
-	rospy.Subscriber("/car_X/scan",LaserScan,callback)
+	rospy.Subscriber("/car_8/scan",LaserScan,callback)
 	rospy.spin()
