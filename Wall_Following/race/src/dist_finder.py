@@ -22,8 +22,45 @@ def getRange(data,angle):
     # angle: between -30 to 210 degrees, where 0 degrees is directly to the right, and 90 degrees is directly in front
     # Outputs length in meters to object with angle in lidar scan field of view
     # Make sure to take care of NaNs etc.
-    #TODO: implement
-	return 0.0
+    
+	lidar_angle_deg = angle + 30.0
+
+	if lidar_angle_deg < 0.0:
+        lidar_angle_deg = 0.0
+    elif lidar_angle_deg > 240.0:
+        lidar_angle_deg = 240.0
+	
+	lidar_angle_rad = math.radians(lidar_angle_deg)
+	idx = int(round((lidar_angle_rad - data.angle_min) / data.angle_increment))
+
+	n = len(data.ranges)
+    if idx < 0:
+        idx = 0
+    elif idx >= n:
+        idx = n - 1
+
+	def is_valid(r):
+        return (
+            r is not None
+            and not math.isnan(r)
+            and not math.isinf(r)
+            and data.range_min <= r <= data.range_max
+        )
+	
+	r = data.ranges[idx]
+    if is_valid(r):
+        return r
+	
+	window = 5  # look up to ±5 beams around idx
+    for offset in range(1, window + 1):
+        left = idx - offset
+        if left >= 0 and is_valid(data.ranges[left]):
+            return data.ranges[left]
+        right = idx + offset
+        if right < n and is_valid(data.ranges[right]):
+            return data.ranges[right]
+	
+	return data.range_max
 
 
 
