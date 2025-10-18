@@ -24,11 +24,11 @@ prev_time = None
 
 vel_input = 0.0	#TODO
 
-CONTROL_HZ = 50.0        # run controller at 50 Hz
+CONTROL_HZ = 10.0        # run controller at 50 Hz
 TS = 1.0 / CONTROL_HZ    # sample time (seconds)
 
 # Steering/clamping configuration
-STEERING_LIMIT = 30.0   # degrees (change to your vehicle's expected unit or keep larger if your vehicle expects different scale)
+STEERING_LIMIT = 100.0   # degrees (change to your vehicle's expected unit or keep larger if your vehicle expects different scale)
 INTEGRAL_LIMIT = 100.0  # anti-windup clamp for integral term
 
 # Publisher for moving the car.
@@ -42,7 +42,6 @@ def control(data):
 	global kd
 	global angle
 
-	print("PID Control Node is Listening to error")
 
 	# Timing
 	global integral_error, prev_time
@@ -109,11 +108,17 @@ def control(data):
 		angle = -100.0
 	command.steering_angle = angle
 
+
+	v_cmd = float(vel_input) - (20*abs(data.pid_error))
+	print("speed: " + str(v_cmd))
+
 	# Clamp velocity
 	if v_cmd < 0.0:
 		v_cmd = 0.0
 	elif v_cmd > 100.0:
 		v_cmd = 100.0
+
+	
 	command.speed = v_cmd
 
 	# Publish
@@ -122,14 +127,17 @@ def control(data):
 if __name__ == '__main__':
 
     # This code tempalte asks for the values for the gains from the user upon start, but you are free to set them as ROS parameters as well.
-	global kp
-	global kd
-	global ki
-	global vel_input
-	kp = input("Enter Kp Value: ")
-	kd = input("Enter Kd Value: ")
-	ki = input("Enter Ki Value: ")
-	vel_input = input("Enter desired velocity: ")
+	# global kp
+	# global kd
+	# global ki
+	# global vel_input
+	#kp = input("Enter Kp Value: ")
+	#kd = input("Enter Kd Value: ")
+	# ki = input("Enter Ki Value: ")
+	vel_input = input("Enter desired velocity: ") # 35
+	kp = 150
+	kd = 0.2
+	ki = 0
 	rospy.init_node('pid_controller', anonymous=True)
     # subscribe to the error topic
 	rospy.Subscriber("error", pid_input, control)

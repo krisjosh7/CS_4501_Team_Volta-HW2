@@ -8,7 +8,7 @@ from race.msg import pid_input
 # Some useful variable declarations.
 angle_range = 240	# Hokuyo 4LX has 240 degrees FoV for scan
 forward_projection = 1.5	# distance (in m) that we project the car forward for correcting the error. You have to adjust this.
-desired_distance = 0.9	# distance from the wall (in m). (defaults to right wall). You need to change this for the track
+desired_distance = 0.8	# distance from the wall (in m). (defaults to right wall). You need to change this for the track
 vel = 15 		# this vel variable is not really used here.
 error = 0.0		# initialize the error
 car_length = 0.50 # Traxxas Rally is 20 inches or 0.5 meters. Useful variable.
@@ -24,8 +24,8 @@ def getRange(data,angle):
     # Make sure to take care of NaNs etc.
     
 	
-	angle_rad = math.radians((angle + 30))
-	idx = int(round((angle_rad) / data.angle_increment))
+	angle_rad = math.radians((angle-90))
+	idx = int(round((angle_rad - data.angle_min) / data.angle_increment))
 
 	n = len(data.ranges)
 	if idx < 0:
@@ -45,19 +45,6 @@ def getRange(data,angle):
 	if valid(r):
 		return r
 	
-	window = 5  
-	for off in range(1, window + 1):
-		left = idx - off
-		if left >= 0:
-			rl = data.ranges[left]
-			if valid(rl):
-				return rl
-		right = idx + off
-		if right < n:
-			rr = data.ranges[right]
-			if valid(rr):
-				return rr
-	
 	return data.range_max
 
 
@@ -65,7 +52,7 @@ def getRange(data,angle):
 def callback(data):
 	global forward_projection
 
-	theta = 50 # you need to try different values for theta
+	theta = 75 # you need to try different values for theta
 	a = getRange(data,theta) # obtain the ray distance for theta
 	b = getRange(data,0)	# obtain the ray distance for 0 degrees (i.e. directly to the right of the car)
 	swing = math.radians(theta)
@@ -89,12 +76,12 @@ def callback(data):
 	error = desired_distance - CD
 	#rospy.loginfo("FIRST SCAN: " + str(data.ranges[0]))
 	#rospy.loginfo("LAST SCAN: " + str(data.ranges[len(data.ranges) - 1]))4
-	rospy.loginfo("dist at 0 : " + str(getRange(data, 0)))
+	#rospy.loginfo("error at 0 : " + str(error))
 
 	msg = pid_input()	# An empty msg is created of the type pid_input
 	# this is the error that you want to send to the PID for steering correction.
 	msg.pid_error = error 
-	msg.pid_vel = vel		# velocity error can also be sent.
+	msg.pid_vel = vel * (0.5 * abs(error))		# velocity error can also be sent.
 	pub.publish(msg)
 
 
