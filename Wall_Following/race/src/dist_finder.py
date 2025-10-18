@@ -26,11 +26,39 @@ def getRange(data,angle):
 	
 	angle_rad = math.radians((angle + 30))
 	idx = int(round((angle_rad) / data.angle_increment))
+
+	n = len(data.ranges)
+    if idx < 0:
+        idx = 0
+    elif idx >= n:
+        idx = n - 1
+
+	def valid(r):
+        return (
+            r is not None
+            and not math.isnan(r)
+            and not math.isinf(r)
+            and data.range_min <= r <= data.range_max
+        )
+
 	r = data.ranges[idx]
-	if math.isnan(r):
-		return 0.0
+    if valid(r):
+        return r
 	
-	return r
+	window = 5  
+    for off in range(1, window + 1):
+        left = idx - off
+        if left >= 0:
+            rl = data.ranges[left]
+            if valid(rl):
+                return rl
+        right = idx + off
+        if right < n:
+            rr = data.ranges[right]
+            if valid(rr):
+                return rr
+	
+	return data.range_max
 
 
 
@@ -46,7 +74,13 @@ def callback(data):
 	# Compute Alpha, AB, and CD..and finally the error.
 	# TODO: implement
 
-	alpha = math.atan((a * math.cos(swing)) / (a * math.sin(swing)))
+
+	denom = a * math.sin(swing)
+    if abs(denom) < 1e-6:
+        rospy.loginfo(1.0, "Denominator tiny in alpha calc; using small epsilon")
+        denom = 1e-6
+
+	alpha = math.atan((a * math.cos(swing)) / denom)
 
 	AB = b * math.cos(alpha)
 

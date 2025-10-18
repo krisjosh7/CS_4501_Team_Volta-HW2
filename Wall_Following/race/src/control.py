@@ -21,33 +21,69 @@ prev_error = 0.0
 # > 40: Careful, what you do here. Only use this if your autonomous steering is very reliable.
 vel_input = 0.0	#TODO
 
+CONTROL_HZ = 50.0        # run controller at 50 Hz
+TS = 1.0 / CONTROL_HZ    # sample time (seconds)
+
 # Publisher for moving the car.
 # TODO: Use the coorect topic /car_x/offboard/command. The multiplexer listens to this topic
-command_pub = rospy.Publisher('/car_9/offboard/command', AckermannDrive, queue_size = 1)
+command_pub = rospy.Publisher('/car_8/offboard/command', AckermannDrive, queue_size = 1)
 
 def control(data):
 	global prev_error
 	global vel_input
 	global kp
 	global kd
-	global angle = 0.0
+	global angle
 
 	print("PID Control Node is Listening to error")
 
 	## Your PID code goes here
+
+	now = rospy.Time.now()
+    if prev_time is None:
+        dt = 1e-3
+    else:
+        dt = (now - prev_time).to_sec()
+        if dt <= 0.0:
+            dt = 1e-3
+    prev_time = now
+
 	#TODO: Use kp, ki & kd to implement a PID controller
 
+	kp_f = float(kp)
+    kd_f = float(kd)
+    ki_f = float(ki)
+    v_cmd = float(vel_input)
+
 	# 1. Scale the error
+	err = float(data.pid_error)
+
+    # Integrate & differentiate
+    integral_error += err * dt
+    derivative = (err - prev_error) / dt
+    prev_error = err
+
 	# 2. Apply the PID equation on error to compute steering
+
+	pid_out = kp_f * err + ki_f * integral_error + kd_f * derivative
+	angle = servo_offset + pid_out
 
 	# An empty AckermannDrive message is created. You will populate the steering_angle and the speed fields.
 	command = AckermannDrive()
 
 	# TODO: Make sure the steering value is within bounds [-100,100]
+	if angle > 100.0:
+        angle = 100.0
+    elif angle < -100.0:
+        angle = -100.0
 	command.steering_angle = angle
 
 	# TODO: Make sure the velocity is within bounds [0,100]
-	command.speed = vel_input
+	if v_cmd < 0.0:
+        v_cmd = 0.0
+    elif v_cmd > 100.0:
+        v_cmd = 100.0
+	command.speed = v_cmd
 
 	# Move the car autonomously
 	command_pub.publish(command)
