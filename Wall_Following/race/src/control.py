@@ -10,6 +10,8 @@ kd = 0.0 #TODO
 ki = 0.0 #TODO
 servo_offset = 0.0	# zero correction offset in case servo is misaligned and has a bias in turning.
 prev_error = 0.0
+integral_error = 0.0
+prev_time = None
 
 
 # This code can input desired velocity from the user.
@@ -19,10 +21,15 @@ prev_error = 0.0
 # 25: Slow and steady
 # 35: Nice Autonomous Pace
 # > 40: Careful, what you do here. Only use this if your autonomous steering is very reliable.
+
 vel_input = 0.0	#TODO
 
 CONTROL_HZ = 50.0        # run controller at 50 Hz
 TS = 1.0 / CONTROL_HZ    # sample time (seconds)
+
+# Steering/clamping configuration
+STEERING_LIMIT = 30.0   # degrees (change to your vehicle's expected unit or keep larger if your vehicle expects different scale)
+INTEGRAL_LIMIT = 100.0  # anti-windup clamp for integral term
 
 # Publisher for moving the car.
 # TODO: Use the coorect topic /car_x/offboard/command. The multiplexer listens to this topic
@@ -37,15 +44,16 @@ def control(data):
 
 	print("PID Control Node is Listening to error")
 
-	## Your PID code goes here
-
+	# Timing
+	global integral_error, prev_time
 	now = rospy.Time.now()
 	if prev_time is None:
-		dt = 1e-3
+		# first callback, use nominal sample time
+		dt = TS
 	else:
 		dt = (now - prev_time).to_sec()
 		if dt <= 0.0:
-			dt = 1e-3
+			dt = TS
 	prev_time = now
 
 	#TODO: Use kp, ki & kd to implement a PID controller
@@ -55,21 +63,43 @@ def control(data):
 	ki_f = float(ki)
 	v_cmd = float(vel_input)
 
-	# 1. Scale the error
-	err = float(data.pid_error)
+	# 1. Read the error
+	try:
+		err = float(data.pid_error)
+	except Exception:
+		rospy.logwarn("Invalid pid_error received; ignoring")
+		return
 
-    # Integrate & differentiate
+	# Integrate & differentiate with anti-windup
 	integral_error += err * dt
-	
-	derivative = (err - prev_error) / dt
+	# clamp integral to avoid windup
+	if integral_error > INTEGRAL_LIMIT:
+		integral_error = INTEGRAL_LIMIT
+	elif integral_error < -INTEGRAL_LIMIT:
+		integral_error = -INTEGRAL_LIMIT
+
+	derivative = 0.0
+	# prev_error may not be defined on first run; use it safely
+	try:
+		derivative = (err - prev_error) / dt
+	except Exception:
+		derivative = 0.0
+
 	prev_error = err
 
-	# 2. Apply the PID equation on error to compute steering
-
+	# PID output
 	pid_out = kp_f * err + ki_f * integral_error + kd_f * derivative
+
+	# compute steering angle command (apply servo offset)
 	angle = servo_offset + pid_out
 
-	# An empty AckermannDrive message is created. You will populate the steering_angle and the speed fields.
+	# Clamp steering angle to safe bounds
+	if angle > STEERING_LIMIT:
+		angle = STEERING_LIMIT
+	elif angle < -STEERING_LIMIT:
+		angle = -STEERING_LIMIT
+
+	# Prepare Ackermann command
 	command = AckermannDrive()
 
 	# TODO: Make sure the steering value is within bounds [-100,100]
@@ -79,14 +109,14 @@ def control(data):
 		angle = -100.0
 	command.steering_angle = angle
 
-	# TODO: Make sure the velocity is within bounds [0,100]
+	# Clamp velocity
 	if v_cmd < 0.0:
 		v_cmd = 0.0
 	elif v_cmd > 100.0:
 		v_cmd = 100.0
 	command.speed = v_cmd
 
-	# Move the car autonomously
+	# Publish
 	command_pub.publish(command)
 
 if __name__ == '__main__':

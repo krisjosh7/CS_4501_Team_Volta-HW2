@@ -1,0 +1,25 @@
+<launch>
+    <!-- Launch the LIDAR error node -->
+    <node pkg="race" type="dist_finder.py" name="dist_finder" output="screen">
+        <!-- Example: set parameters here if needed -->
+        <!-- <param name="desired_distance" value="0.9" /> -->
+    </node>
+
+    <!-- Launch the PID controller node -->
+    <node pkg="race" type="control.py" name="pid_controller" output="screen">
+        <!-- Set PID gains and velocity as ROS params for easy tuning -->
+        <param name="kp" value="2.0" />
+        <param name="ki" value="0.0" />
+        <param name="kd" value="0.5" />
+        <param name="vel_input" value="15.0" />
+    </node>
+
+    <!-- Optional: Launch the error test publisher for offline tuning -->
+    <!--
+    <node pkg="race" type="error_publisher.py" name="error_publisher" output="screen">
+        <param name="mode" value="step" />
+        <param name="amplitude" value="0.5" />
+        <param name="hold" value="5.0" />
+    </node>
+    -->
+</launch>
