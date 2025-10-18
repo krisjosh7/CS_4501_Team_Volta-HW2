@@ -40,28 +40,29 @@ def control(data):
 	## Your PID code goes here
 
 	now = rospy.Time.now()
-    if prev_time is None:
-        dt = 1e-3
-    else:
-        dt = (now - prev_time).to_sec()
-        if dt <= 0.0:
-            dt = 1e-3
-    prev_time = now
+	if prev_time is None:
+		dt = 1e-3
+	else:
+		dt = (now - prev_time).to_sec()
+		if dt <= 0.0:
+			dt = 1e-3
+	prev_time = now
 
 	#TODO: Use kp, ki & kd to implement a PID controller
 
 	kp_f = float(kp)
-    kd_f = float(kd)
-    ki_f = float(ki)
-    v_cmd = float(vel_input)
+	kd_f = float(kd)
+	ki_f = float(ki)
+	v_cmd = float(vel_input)
 
 	# 1. Scale the error
 	err = float(data.pid_error)
 
     # Integrate & differentiate
-    integral_error += err * dt
-    derivative = (err - prev_error) / dt
-    prev_error = err
+	integral_error += err * dt
+	
+	derivative = (err - prev_error) / dt
+	prev_error = err
 
 	# 2. Apply the PID equation on error to compute steering
 
@@ -73,16 +74,16 @@ def control(data):
 
 	# TODO: Make sure the steering value is within bounds [-100,100]
 	if angle > 100.0:
-        angle = 100.0
-    elif angle < -100.0:
-        angle = -100.0
+		angle = 100.0
+	elif angle < -100.0:
+		angle = -100.0
 	command.steering_angle = angle
 
 	# TODO: Make sure the velocity is within bounds [0,100]
 	if v_cmd < 0.0:
-        v_cmd = 0.0
-    elif v_cmd > 100.0:
-        v_cmd = 100.0
+		v_cmd = 0.0
+	elif v_cmd > 100.0:
+		v_cmd = 100.0
 	command.speed = v_cmd
 
 	# Move the car autonomously

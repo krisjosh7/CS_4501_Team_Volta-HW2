@@ -28,13 +28,13 @@ def getRange(data,angle):
 	idx = int(round((angle_rad) / data.angle_increment))
 
 	n = len(data.ranges)
-    if idx < 0:
-        idx = 0
-    elif idx >= n:
-        idx = n - 1
+	if idx < 0:
+		idx = 0
+	elif idx >= n:
+		idx = n - 1
 
 	def valid(r):
-        return (
+		return (
             r is not None
             and not math.isnan(r)
             and not math.isinf(r)
@@ -42,21 +42,21 @@ def getRange(data,angle):
         )
 
 	r = data.ranges[idx]
-    if valid(r):
-        return r
+	if valid(r):
+		return r
 	
 	window = 5  
-    for off in range(1, window + 1):
-        left = idx - off
-        if left >= 0:
-            rl = data.ranges[left]
-            if valid(rl):
-                return rl
-        right = idx + off
-        if right < n:
-            rr = data.ranges[right]
-            if valid(rr):
-                return rr
+	for off in range(1, window + 1):
+		left = idx - off
+		if left >= 0:
+			rl = data.ranges[left]
+			if valid(rl):
+				return rl
+		right = idx + off
+		if right < n:
+			rr = data.ranges[right]
+			if valid(rr):
+				return rr
 	
 	return data.range_max
 
@@ -76,15 +76,15 @@ def callback(data):
 
 
 	denom = a * math.sin(swing)
-    if abs(denom) < 1e-6:
-        rospy.loginfo(1.0, "Denominator tiny in alpha calc; using small epsilon")
-        denom = 1e-6
+	if abs(denom) < 1e-6:
+		rospy.loginfo(1.0, "Denominator tiny in alpha calc; using small epsilon")
+		denom = 1e-6
 
-	alpha = math.atan((a * math.cos(swing)) / denom)
+	alpha = math.atan((a * math.cos(swing) - b) / denom)
 
 	AB = b * math.cos(alpha)
 
-	CD = AB - forward_projection * (math.sin(alpha))
+	CD = AB + forward_projection * (math.sin(alpha))
 
 	error = desired_distance - CD
 	#rospy.loginfo("FIRST SCAN: " + str(data.ranges[0]))
@@ -93,7 +93,7 @@ def callback(data):
 
 	msg = pid_input()	# An empty msg is created of the type pid_input
 	# this is the error that you want to send to the PID for steering correction.
-	msg.pid_error = error
+	msg.pid_error = error 
 	msg.pid_vel = vel		# velocity error can also be sent.
 	pub.publish(msg)
 
