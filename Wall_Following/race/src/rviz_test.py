@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-
 import rospy
 import math
 from sensor_msgs.msg import LaserScan
@@ -9,15 +8,27 @@ from std_msgs.msg import Int32
 from visualization_msgs.msg import Marker
 
 from tf.transformations import quaternion_from_euler
+from ackermann_msgs.msg import AckermannDrive
 
 sphere_marker_pub = rospy.Publisher("/sphere_marker", Marker, queue_size = 2)
 arrow_marker_pub = rospy.Publisher("/arrow_marker", Marker, queue_size = 2)
 prev_range = 0.0
 
+# steering state (updated by drive callback)
+steering_angle = 0.0  # radians
+
+# configuration defaults (can be overridden by ROS params in __main__)
+FRAME_ID = "car_8_laser"
+DRIVE_TOPIC = "/car_8/offboard/command"
+
+# If your controller publishes steering in degrees, set this to True
+STEERING_IN_DEGREES = False
+
 
 def callback(data):
     
     global prev_range
+    global steering_angle
     # pick out the middle range value (at index 540 - just an example)
     center = data.ranges[540]
 
@@ -34,7 +45,7 @@ def callback(data):
 
     sphere_marker = Marker()
 
-    sphere_marker.header.frame_id = "car_9_laser"
+    sphere_marker.header.frame_id = "car_8_laser"
     sphere_marker.header.stamp = rospy.Time.now()
 
     # set shape, Arrow: 0; Cube: 1 ; Sphere: 2 ; Cylinder: 3
@@ -75,14 +86,16 @@ def callback(data):
 
     # set shape, Arrow: 0; Cube: 1 ; Sphere: 2 ; Cylinder: 3
     arrow_marker = Marker()
-    arrow_marker.header.frame_id = "car_9_laser"
+    arrow_marker.header.frame_id = FRAME_ID
     arrow_marker.type = 0
     arrow_marker.header.stamp = rospy.Time.now()
     arrow_marker.id = 1
 
-    arrow_marker.scale.x = data.ranges[540]
-    arrow_marker.scale.y = 0.1
-    arrow_marker.scale.z = 0.1
+    # arrow length: use measured center distance (clamped) or a minimum so arrow is visible
+    arrow_length = max(0.3, center if not math.isnan(center) else 0.3)
+    arrow_marker.scale.x = arrow_length
+    arrow_marker.scale.y = 0.08
+    arrow_marker.scale.z = 0.08
 
     # Set the color
     arrow_marker.color.r = 0.0
@@ -90,11 +103,57 @@ def callback(data):
     arrow_marker.color.b = 1.0
     arrow_marker.color.a = 1.0
 
+    # position the arrow at the laser origin (adjust x to move it forward of the sensor)
+    arrow_marker.pose.position.x = 0.0
+    arrow_marker.pose.position.y = 0.0
+    arrow_marker.pose.position.z = 0.0
+
+    # Convert the latest steering angle to a quaternion (yaw). If your steering
+    # is degrees, convert to radians above in the drive callback. If the arrow
+    # points the wrong way, try negating steering_angle here.
+    quat = quaternion_from_euler(0.0, 0.0, steering_angle)
+    arrow_marker.pose.orientation.x = quat[0]
+    arrow_marker.pose.orientation.y = quat[1]
+    arrow_marker.pose.orientation.z = quat[2]
+    arrow_marker.pose.orientation.w = quat[3]
+
     arrow_marker_pub.publish(arrow_marker)
 
    
 if __name__=='__main__':
-    rospy.init_node("rviz_test", anonymous=False)   
-    sub = rospy.Subscriber("/car_9/scan",LaserScan, callback)
+    rospy.init_node("rviz_test", anonymous=False)
+
+    # Read configurable params
+    # global FRAME_ID, DRIVE_TOPIC, STEERING_IN_DEGREES
+    FRAME_ID = rospy.get_param('~frame_id', FRAME_ID)
+    scan_topic = rospy.get_param('~scan_topic', '/car_8/scan')
+    DRIVE_TOPIC = rospy.get_param('~drive_topic', DRIVE_TOPIC)
+    STEERING_IN_DEGREES = rospy.get_param('~steering_in_degrees', STEERING_IN_DEGREES)
+
+    # Subscribe to scan and drive topics
+    sub = rospy.Subscriber(scan_topic, LaserScan, callback)
+    rospy.Subscriber(DRIVE_TOPIC, AckermannDrive, lambda msg: drive_callback(msg))
+
+    rospy.loginfo("rviz_test: subscribed to scan='%s' drive='%s' frame='%s' steering_in_degrees=%s",
+                  scan_topic, DRIVE_TOPIC, FRAME_ID, STEERING_IN_DEGREES)
+
     rospy.spin()
+
+
+def drive_callback(msg):
+    """Callback to capture latest steering angle from AckermannDrive messages.
+
+    This stores the steering angle in radians in the global `steering_angle`.
+    If the controller publishes degrees, the value is converted automatically
+    when STEERING_IN_DEGREES is True.
+    """
+    global steering_angle
+    angle = msg.steering_angle
+    if STEERING_IN_DEGREES:
+        try:
+            angle = math.radians(angle)
+        except Exception:
+            pass
+    # If the arrow points the opposite direction, flip the sign here:
+    steering_angle = angle
 
