@@ -131,13 +131,13 @@ if __name__ == '__main__':
 	# global kd
 	# global ki
 	# global vel_input
-	#kp = input("Enter Kp Value: ")
-	#kd = input("Enter Kd Value: ")
-	# ki = input("Enter Ki Value: ")
-	vel_input = input("Enter desired velocity: ") # 35
-	kp = 150
-	kd = 0.2
-	ki = 0
+	kp = input("Enter Kp Value: ") # 120
+	kd = input("Enter Kd Value: ") # 0.4
+	ki = input("Enter Ki Value: ") # 0
+	vel_input = input("Enter desired velocity: ") # 40
+	#kp = 150
+	#kd = 0.2
+	#ki = 0
 	rospy.init_node('pid_controller', anonymous=True)
     # subscribe to the error topic
 	rospy.Subscriber("error", pid_input, control)
