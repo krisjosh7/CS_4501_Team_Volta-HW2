@@ -1,4 +1,5 @@
 <launch>
+    <include file="$(find move_base)/launch/remote_teleop.launch"/>
     <!-- Launch the LIDAR error node -->
     <node pkg="race" type="dist_finder.py" name="dist_finder" output="screen">
         <!-- Example: set parameters here if needed -->
@@ -6,12 +7,15 @@
     </node>
 
     <!-- Launch the PID controller node -->
-    <node pkg="race" type="control.py" name="pid_controller" output="screen">
-        <!-- Set PID gains and velocity as ROS params for easy tuning -->
-        <param name="kp" value="2.0" />
-        <param name="ki" value="0.0" />
-        <param name="kd" value="0.5" />
-        <param name="vel_input" value="15.0" />
+    <node pkg="race" type="control.py" name="pid_controller" launch-prefix="gnome-terminal -e">
+    </node>
+
+    <!-- Launch the rviz_test.py marker node -->
+    <node pkg="race" type="rviz_test.py" name="rviz_test" output="screen">
+    </node>
+
+    <!-- Launch rviz with the corresponding config -->
+    <node pkg="rviz" type="rviz" name="rviz" args="-d $(find race)/steer_marker.rviz"  output="screen">
     </node>
 
     <!-- Optional: Launch the error test publisher for offline tuning -->
