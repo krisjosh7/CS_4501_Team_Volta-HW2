@@ -131,10 +131,10 @@ if __name__ == '__main__':
 	# global kd
 	# global ki
 	# global vel_input
-	kp = input("Enter Kp Value: ") # 120
-	kd = input("Enter Kd Value: ") # 0.4
-	ki = input("Enter Ki Value: ") # 0
-	vel_input = input("Enter desired velocity: ") # 40
+	kp = input("Enter Kp Value: ") # 150
+	kd = input("Enter Kd Value: ") # 0.2
+	ki = input("Enter Ki Value: ")
+	vel_input = input("Enter desired velocity: ") # 35
 	#kp = 150
 	#kd = 0.2
 	#ki = 0
