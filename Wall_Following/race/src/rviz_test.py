@@ -37,8 +37,6 @@ def callback(data):
         center = prev_range
     
     prev_range = center
-    mid = "Middle Range %s" % (center)
-    rospy.loginfo(mid)
 
 
     # SPHERE MARKER
@@ -82,6 +80,19 @@ def callback(data):
 
     sphere_marker_pub.publish(sphere_marker)
 
+def drive_callback(msg):
+    """Callback to capture latest steering angle from AckermannDrive messages.
+
+    This stores the steering angle in radians in the global `steering_angle`.
+    If the controller publishes degrees, the value is converted automatically
+    when STEERING_IN_DEGREES is True.
+    """
+    global steering_angle
+    angle = msg.steering_angle
+    angle = math.radians(angle)
+    # If the arrow points the opposite direction, flip the sign here:
+    steering_angle = angle
+
     # ARROW MARKER
 
     # set shape, Arrow: 0; Cube: 1 ; Sphere: 2 ; Cylinder: 3
@@ -92,7 +103,7 @@ def callback(data):
     arrow_marker.id = 1
 
     # arrow length: use measured center distance (clamped) or a minimum so arrow is visible
-    arrow_length = max(0.3, center if not math.isnan(center) else 0.3)
+    arrow_length = 1
     arrow_marker.scale.x = arrow_length
     arrow_marker.scale.y = 0.08
     arrow_marker.scale.z = 0.08
@@ -139,21 +150,4 @@ if __name__=='__main__':
 
     rospy.spin()
 
-
-def drive_callback(msg):
-    """Callback to capture latest steering angle from AckermannDrive messages.
-
-    This stores the steering angle in radians in the global `steering_angle`.
-    If the controller publishes degrees, the value is converted automatically
-    when STEERING_IN_DEGREES is True.
-    """
-    global steering_angle
-    angle = msg.steering_angle
-    if STEERING_IN_DEGREES:
-        try:
-            angle = math.radians(angle)
-        except Exception:
-            pass
-    # If the arrow points the opposite direction, flip the sign here:
-    steering_angle = angle
 
