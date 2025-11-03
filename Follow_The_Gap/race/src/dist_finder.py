@@ -9,9 +9,14 @@ from race.msg import pid_input
 angle_range = 240	# Hokuyo 4LX has 240 degrees FoV for scan
 forward_projection = 1.5	# distance (in m) that we project the car forward for correcting the error. You have to adjust this.
 desired_distance = 0.9	# distance from the wall (in m). (defaults to right wall). You need to change this for the track
+
+disp_threshold = 0.1
+
 vel = 15 		# this vel variable is not really used here.
 error = 0.0		# initialize the error
 car_length = 0.50 # Traxxas Rally is 20 inches or 0.5 meters. Useful variable.
+
+car_width = 0.33
 
 # Handle to the publisher that will publish on the error topic, messages of the type 'pid_input'
 pub = rospy.Publisher('error', pid_input, queue_size=10)
@@ -22,33 +27,101 @@ def getRange(data,angle):
     # angle: between -30 to 210 degrees, where 0 degrees is directly to the right, and 90 degrees is directly in front
     # Outputs length in meters to object with angle in lidar scan field of view
     # Make sure to take care of NaNs etc.
-    #TODO: implement
-	return 0.0
+    
+	
+	angle_rad = math.radians((angle-90))
+	idx = int(round((angle_rad - data.angle_min) / data.angle_increment))
+
+	n = len(data.ranges)
+	if idx < 0:
+		idx = 0
+	elif idx >= n:
+		idx = n - 1
+
+	def valid(r):
+		return (
+            r is not None
+            and not math.isnan(r)
+            and not math.isinf(r)
+            and data.range_min <= r <= data.range_max
+        )
+
+	r = data.ranges[idx]
+	if valid(r):
+		return r
+	
+	return data.range_max
 
 
 
 def callback(data):
-	global forward_projection
+    global error, vel
 
-	theta = 50 # you need to try different values for theta
-	a = getRange(data,theta) # obtain the ray distance for theta
-	b = getRange(data,0)	# obtain the ray distance for 0 degrees (i.e. directly to the right of the car)
-	swing = math.radians(theta)
+    # 1️⃣ Get lidar ranges and clean them
+    ranges = list(data.ranges)
+    n = len(ranges)
+    for i in range(n):
+        if math.isnan(ranges[i]) or math.isinf(ranges[i]):
+            ranges[i] = data.range_max
 
-	## Your code goes here to determine the projected error as per the alrorithm
-	# Compute Alpha, AB, and CD..and finally the error.
-	# TODO: implement
+    # 2️⃣ Find disparities
+    disparities = []
+    for i in range(n - 1):
+        if abs(ranges[i + 1] - ranges[i]) > disp_threshold:
+            disparities.append(i)
 
-	msg = pid_input()	# An empty msg is created of the type pid_input
-	# this is the error that you want to send to the PID for steering correction.
-	msg.pid_error = error
-	msg.pid_vel = vel		# velocity error can also be sent.
-	pub.publish(msg)
+    # 3️⃣ Extend obstacles near disparities
+    for i in disparities:
+        r_close = min(ranges[i], ranges[i + 1])
+        r_far = max(ranges[i], ranges[i + 1])
+
+        # how many samples correspond to half the car width at this distance
+        theta = abs(data.angle_increment)
+        half_width = (car_width / 2.0) + 0.05  # tolerance
+        samples_to_extend = int(math.degrees(math.atan2(half_width, r_close)) / math.degrees(theta))
+
+        # overwrite from the far side toward same direction
+        if ranges[i] > ranges[i + 1]:
+            # obstacle closer on right → extend to the right
+            for j in range(i + 1, min(i + 1 + samples_to_extend, n)):
+                ranges[j] = min(ranges[j], r_close)
+        else:
+            # obstacle closer on left → extend to the left
+            for j in range(max(0, i - samples_to_extend), i):
+                ranges[j] = min(ranges[j], r_close)
+
+    # 4️⃣ Focus only on forward-facing range (-90° to +90°)
+    start_angle = int(((-90 * math.pi / 180) - data.angle_min) / data.angle_increment)
+    end_angle   = int(((90 * math.pi / 180) - data.angle_min) / data.angle_increment)
+    front_ranges = ranges[start_angle:end_angle]
+
+    # 5️⃣ Find the index of the farthest point (deepest gap)
+    max_idx = front_ranges.index(max(front_ranges))
+    best_angle = data.angle_min + (start_angle + max_idx) * data.angle_increment
+
+    # 6️⃣ Convert steering angle → control signal range [-100, 100]
+    steering = math.degrees(best_angle)
+    steering = max(-100, min(100, (steering / 90.0) * 100))
+
+    # 7️⃣ (optional) Adjust velocity based on obstacle proximity
+    min_front = min(front_ranges)
+    if min_front < 0.5:
+        vel = 0  # stop if too close
+    elif min_front < 1.0:
+        vel = 25
+    else:
+        vel = 35
+
+    # 8️⃣ Publish the control message
+    msg = pid_input()
+    msg.pid_error = steering
+    msg.pid_vel = vel
+    pub.publish(msg)
 
 
 if __name__ == '__main__':
 	print("Hokuyo LIDAR node started")
 	rospy.init_node('dist_finder',anonymous = True)
 	# TODO: Make sure you are subscribing to the correct car_x/scan topic on your racecar
-	rospy.Subscriber("/car_X/scan",LaserScan,callback)
+	rospy.Subscriber("/car_8/scan",LaserScan,callback)
 	rospy.spin()
