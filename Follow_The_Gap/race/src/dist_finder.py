@@ -3,23 +3,26 @@
 import rospy
 import math
 from sensor_msgs.msg import LaserScan
-from race.msg import pid_input
+from ackermann_msgs.msg import AckermannDrive
 
 # Some useful variable declarations.
+
+servo_offset = 0.0	# zero correction offset in case servo is misaligned and has a bias in turning.
+
 angle_range = 240	# Hokuyo 4LX has 240 degrees FoV for scan
 forward_projection = 1.5	# distance (in m) that we project the car forward for correcting the error. You have to adjust this.
 desired_distance = 0.9	# distance from the wall (in m). (defaults to right wall). You need to change this for the track
 
 disp_threshold = 0.1
 
-vel = 15 		# this vel variable is not really used here.
+vel = 0.0	# this vel variable IS really used here.
 error = 0.0		# initialize the error
 car_length = 0.50 # Traxxas Rally is 20 inches or 0.5 meters. Useful variable.
 
 car_width = 0.33
 
 # Handle to the publisher that will publish on the error topic, messages of the type 'pid_input'
-pub = rospy.Publisher('error', pid_input, queue_size=10)
+command_pub = rospy.Publisher('/car_8/offboard/command', AckermannDrive, queue_size = 1)
 
 
 def getRange(data,angle):
@@ -55,7 +58,7 @@ def getRange(data,angle):
 
 
 def callback(data):
-    global error, vel
+    global vel
 
     # 1️⃣ Get lidar ranges and clean them
     ranges = list(data.ranges)
@@ -73,7 +76,7 @@ def callback(data):
     # 3️⃣ Extend obstacles near disparities
     for i in disparities:
         r_close = min(ranges[i], ranges[i + 1])
-        r_far = max(ranges[i], ranges[i + 1])
+        # r_far = max(ranges[i], ranges[i + 1])
 
         # how many samples correspond to half the car width at this distance
         theta = abs(data.angle_increment)
@@ -108,20 +111,22 @@ def callback(data):
     if min_front < 0.5:
         vel = 0  # stop if too close
     elif min_front < 1.0:
-        vel = 25
+        vel = 15
     else:
-        vel = 35
+        vel = 25
 
     # 8️⃣ Publish the control message
-    msg = pid_input()
-    msg.pid_error = steering
-    msg.pid_vel = vel
-    pub.publish(msg)
+    command = AckermannDrive()
+    command.steering_angle = steering
+    command.speed = vel
+    command_pub.publish(command)
+
 
 
 if __name__ == '__main__':
-	print("Hokuyo LIDAR node started")
-	rospy.init_node('dist_finder',anonymous = True)
+
+    print("Hokuyo LIDAR node started")
+    rospy.init_node('dist_finder',anonymous = True)
 	# TODO: Make sure you are subscribing to the correct car_x/scan topic on your racecar
-	rospy.Subscriber("/car_8/scan",LaserScan,callback)
-	rospy.spin()
+    rospy.Subscriber("/car_8/scan",LaserScan,callback)
+    rospy.spin()
