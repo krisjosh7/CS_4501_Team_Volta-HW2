@@ -81,7 +81,10 @@ def callback(data):
         # how many samples correspond to half the car width at this distance
         theta = abs(data.angle_increment)
         half_width = (car_width / 2.0) + 0.05  # tolerance
-        samples_to_extend = int(math.degrees(math.atan2(half_width, r_close)) / math.degrees(theta))
+        ang_span = math.atan2(half_width, max(r_close, 1e-3))
+        samples_to_extend = int(ang_span / max(theta, 1e-6))
+        if samples_to_extend <= 0:
+            continue
 
         # overwrite from the far side toward same direction
         if ranges[i] > ranges[i + 1]:
