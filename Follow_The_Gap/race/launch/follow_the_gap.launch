@@ -1,17 +1,18 @@
 <launch>
+    <!-- Include remote teleop launch -->
     <include file="$(find move_base)/launch/remote_teleop.launch"/>
-    <!-- Launch the LIDAR error node -->
-    <node pkg="move_base" type="move_base.py"/>
+    
+    <!-- Launch the LIDAR processing node -->
     <node pkg="race" type="dist_finder.py" name="dist_finder" output="screen">
-        <!-- Example: set parameters here if needed -->
-        <!-- <param name="desired_distance" value="0.9" /> -->
+        <remap from="scan" to="/car_8/scan"/>
     </node>
 
-    <!-- Launch the rviz_test.py marker node -->
-    <!-- <node pkg="race" type="rviz_test.py" name="rviz_test" output="screen">
-    </node> -->
+    <!-- Launch the control node -->
+    <node pkg="race" type="control.py" name="gap_follower" output="screen"/>
 
-    <!-- Launch rviz with the corresponding config -->
-    <!-- <node pkg="rviz" type="rviz" name="rviz" args="-d $(find race)/steer_marker.rviz"  output="screen"> -->
-    <!-- </node> -->
+    <!-- Launch the visualization node -->
+    <node pkg="race" type="rviz_test.py" name="rviz_test" output="screen"/>
+
+    <!-- Launch RViz with custom configuration -->
+    <node pkg="rviz" type="rviz" name="rviz" args="-d $(find race)/steer_marker.config.rviz"/>
 </launch>

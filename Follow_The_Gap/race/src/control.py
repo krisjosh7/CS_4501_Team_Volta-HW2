@@ -1,15 +1,11 @@
 #!/usr/bin/env python
 import math
 import rospy
-from race.msg import pid_input
+from std_msgs.msg import Float32MultiArray
 from ackermann_msgs.msg import AckermannDrive
 
-# PID Control Params
-kp = 0.0 #TODO
-kd = 0.0 #TODO
-ki = 0.0 #TODO
-servo_offset = 0.0	# zero correction offset in case servo is misaligned and has a bias in turning.
-prev_error = 0.0
+# Control parameters
+servo_offset = 0.0  # zero correction offset in case servo is misaligned
 
 
 # This code can input desired velocity from the user.
@@ -21,49 +17,39 @@ prev_error = 0.0
 # > 40: Careful, what you do here. Only use this if your autonomous steering is very reliable.
 vel_input = 0.0	#TODO
 
-# Publisher for moving the car.
-# TODO: Use the coorect topic /car_x/offboard/command. The multiplexer listens to this topic
-command_pub = rospy.Publisher('/car_8/offboard/command', AckermannDrive, queue_size = 1)
+# Publishers and subscribers
+command_pub = rospy.Publisher('/car_8/offboard/command', AckermannDrive, queue_size=1)
 
-def control(data):
-	global prev_error
-	global vel_input
-	global kp
-	global kd
-	global angle = 0.0
-
-	print("PID Control Node is Listening to error")
-
-	## Your PID code goes here
-	#TODO: Use kp, ki & kd to implement a PID controller
-
-	# 1. Scale the error
-	# 2. Apply the PID equation on error to compute steering
-
-	# An empty AckermannDrive message is created. You will populate the steering_angle and the speed fields.
-	command = AckermannDrive()
-
-	# TODO: Make sure the steering value is within bounds [-100,100]
-	command.steering_angle = angle
-
-	# TODO: Make sure the velocity is within bounds [0,100]
-	command.speed = vel_input
-
-	# Move the car autonomously
-	command_pub.publish(command)
+def gap_callback(msg):
+    # Extract gap information
+    best_angle = msg.data[0]  # in radians
+    gap_distance = msg.data[1]  # distance to the gap TODO: implement dynamic velocity scaling
+    
+    # Convert steering angle → control signal range [-100, 100]
+    steering = math.degrees(best_angle)
+    steering = max(-100, min(100, (steering / 90.0) * 100))
+    
+    # Add servo offset if needed
+    steering += servo_offset
+    
+    # Determine velocity based on gap distance
+    velocity = 15
+        
+    # Create and publish command
+    command = AckermannDrive()
+    command.steering_angle = steering
+    command.speed = velocity
+    command_pub.publish(command)
 
 if __name__ == '__main__':
-
-    # This code tempalte asks for the values for the gains from the user upon start, but you are free to set them as ROS parameters as well.
-	global kp
-	global kd
-	global ki
-	global vel_input
-	kp = input("Enter Kp Value: ")
-	kd = input("Enter Kd Value: ")
-	ki = input("Enter Ki Value: ")
-	vel_input = input("Enter desired velocity: ")
-	rospy.init_node('pid_controller', anonymous=True)
-    # subscribe to the error topic
-	rospy.Subscriber("error", pid_input, control)
-	rospy.spin()
+    try:
+        rospy.init_node('gap_follower')
+        rospy.loginfo("Starting gap follower node...")
+        
+        # Subscribe to the gap information
+        rospy.Subscriber("/car_8/gap_info", Float32MultiArray, gap_callback)
+        
+        rospy.spin()
+        
+    except rospy.ROSInterruptException:
+        pass

@@ -1,6 +1,7 @@
 <launch>
     <include file="$(find move_base)/launch/remote_teleop.launch"/>
     <!-- Launch the LIDAR error node -->
+    <node pkg="move_base" type="move_base.py"/>
     <node pkg="race" type="dist_finder.py" name="dist_finder" output="screen">
         <!-- Example: set parameters here if needed -->
         <!-- <param name="desired_distance" value="0.9" /> -->
@@ -17,13 +18,4 @@
     <!-- Launch rviz with the corresponding config -->
     <node pkg="rviz" type="rviz" name="rviz" args="-d $(find race)/steer_marker.rviz"  output="screen">
     </node>
-
-    <!-- Optional: Launch the error test publisher for offline tuning -->
-    <!--
-    <node pkg="race" type="error_publisher.py" name="error_publisher" output="screen">
-        <param name="mode" value="step" />
-        <param name="amplitude" value="0.5" />
-        <param name="hold" value="5.0" />
-    </node>
-    -->
 </launch>

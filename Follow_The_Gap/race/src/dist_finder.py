@@ -3,26 +3,16 @@
 import rospy
 import math
 from sensor_msgs.msg import LaserScan
-from ackermann_msgs.msg import AckermannDrive
+from std_msgs.msg import Float32MultiArray
 
-# Some useful variable declarations.
+# Constants for LIDAR processing
+angle_range = 240  # Hokuyo 4LX has 240 degrees FoV for scan
+disp_threshold = 0.2  # Threshold for detecting disparities
+car_width = 0.23  # Car width in meters
 
-servo_offset = 0.0	# zero correction offset in case servo is misaligned and has a bias in turning.
-
-angle_range = 240	# Hokuyo 4LX has 240 degrees FoV for scan
-forward_projection = 1.5	# distance (in m) that we project the car forward for correcting the error. You have to adjust this.
-desired_distance = 0.9	# distance from the wall (in m). (defaults to right wall). You need to change this for the track
-
-disp_threshold = 0.2
-
-vel = 0.0	# this vel variable IS really used here.
-error = 0.0		# initialize the error
-car_length = 0.50 # Traxxas Rally is 20 inches or 0.5 meters. Useful variable.
-
-car_width = 0.23
-
-# Handle to the publisher that will publish on the error topic, messages of the type 'pid_input'
-command_pub = rospy.Publisher('/car_8/offboard/command', AckermannDrive, queue_size = 1)
+# Publishers for processed data
+processed_scan_pub = rospy.Publisher('/car_8/processed_scan', LaserScan, queue_size=1)
+gap_info_pub = rospy.Publisher('/car_8/gap_info', Float32MultiArray, queue_size=1)
 
 
 def getRange(data,angle):
@@ -55,8 +45,6 @@ def getRange(data,angle):
 	
 	return data.range_max
 
-
-
 def callback(data):
     global vel
 
@@ -76,7 +64,6 @@ def callback(data):
     #Extend obstacles near disparities
     for i in disparities:
         r_close = min(ranges[i], ranges[i + 1])
-        # r_far = max(ranges[i], ranges[i + 1])
 
         # how many samples correspond to half the car width at this distance
         theta = abs(data.angle_increment)
@@ -105,30 +92,28 @@ def callback(data):
     max_idx = front_ranges.index(max(front_ranges))
     best_angle = (data.angle_min + (start_angle + max_idx)) * data.angle_increment
 
-    #Convert steering angle control signal range [-100, 100]
-    steering = math.degrees(best_angle)
-    steering = max(-100, min(100, (steering / 90.0) * 100))
+    # Publish processed scan
+    processed_scan = LaserScan()
+    processed_scan.header = data.header
+    processed_scan.angle_min = data.angle_min
+    processed_scan.angle_max = data.angle_max
+    processed_scan.angle_increment = data.angle_increment
+    processed_scan.time_increment = data.time_increment
+    processed_scan.scan_time = data.scan_time
+    processed_scan.range_min = data.range_min
+    processed_scan.range_max = data.range_max
+    processed_scan.ranges = ranges
+    processed_scan_pub.publish(processed_scan)
 
-    # (optional) Adjust velocity based on obstacle proximity
-    # min_front = min(front_ranges)
-    # if min_front < 0.2:
-    #     vel = 10  # stop if too close
-    # else:
-    #     vel = 25
-    vel = 15
-
-    # Publish the control message
-    command = AckermannDrive()
-    command.steering_angle = steering
-    command.speed = vel
-    command_pub.publish(command)
-
-
+    # Publish gap info
+    gap_info = Float32MultiArray()
+    gap_info.data = [best_angle, front_ranges[max_idx]]  # angle and distance to gap
+    gap_info_pub.publish(gap_info)
 
 if __name__ == '__main__':
 
     print("Hokuyo LIDAR node started")
     rospy.init_node('dist_finder',anonymous = True)
 	# TODO: Make sure you are subscribing to the correct car_x/scan topic on your racecar
-    rospy.Subscriber("/car_8/scan",LaserScan,callback)
+    rospy.Subscriber("/car_8/scan", LaserScan, callback)
     rospy.spin()
