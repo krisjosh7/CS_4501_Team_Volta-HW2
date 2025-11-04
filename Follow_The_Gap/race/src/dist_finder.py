@@ -13,13 +13,13 @@ angle_range = 240	# Hokuyo 4LX has 240 degrees FoV for scan
 forward_projection = 1.5	# distance (in m) that we project the car forward for correcting the error. You have to adjust this.
 desired_distance = 0.9	# distance from the wall (in m). (defaults to right wall). You need to change this for the track
 
-disp_threshold = 0.1
+disp_threshold = 0.2
 
 vel = 0.0	# this vel variable IS really used here.
 error = 0.0		# initialize the error
 car_length = 0.50 # Traxxas Rally is 20 inches or 0.5 meters. Useful variable.
 
-car_width = 0.33
+car_width = 0.23
 
 # Handle to the publisher that will publish on the error topic, messages of the type 'pid_input'
 command_pub = rospy.Publisher('/car_8/offboard/command', AckermannDrive, queue_size = 1)
@@ -60,20 +60,20 @@ def getRange(data,angle):
 def callback(data):
     global vel
 
-    # 1️⃣ Get lidar ranges and clean them
+    #Get lidar ranges and clean them
     ranges = list(data.ranges)
     n = len(ranges)
     for i in range(n):
         if math.isnan(ranges[i]) or math.isinf(ranges[i]):
             ranges[i] = data.range_max
 
-    # 2️⃣ Find disparities
+    #Find disparities
     disparities = []
     for i in range(n - 1):
         if abs(ranges[i + 1] - ranges[i]) > disp_threshold:
             disparities.append(i)
 
-    # 3️⃣ Extend obstacles near disparities
+    #Extend obstacles near disparities
     for i in disparities:
         r_close = min(ranges[i], ranges[i + 1])
         # r_far = max(ranges[i], ranges[i + 1])
@@ -88,37 +88,36 @@ def callback(data):
 
         # overwrite from the far side toward same direction
         if ranges[i] > ranges[i + 1]:
-            # obstacle closer on right → extend to the right
+            # obstacle closer on right extend to the right
             for j in range(i + 1, min(i + 1 + samples_to_extend, n)):
                 ranges[j] = min(ranges[j], r_close)
         else:
-            # obstacle closer on left → extend to the left
-            for j in range(max(0, i - samples_to_extend), i):
+            # obstacle closer on left extend to the left
+            for j in range(max(0, i - samples_to_extend), i+1):
                 ranges[j] = min(ranges[j], r_close)
 
-    # 4️⃣ Focus only on forward-facing range (-90° to +90°)
-    start_angle = int(((-90 * math.pi / 180) - data.angle_min) / data.angle_increment)
-    end_angle   = int(((90 * math.pi / 180) - data.angle_min) / data.angle_increment)
+    #Focus only on forward-facing range (-90 to +90)
+    start_angle = int((math.radians(-90) - data.angle_min) / data.angle_increment)
+    end_angle   = int((math.radians(90) - data.angle_min) / data.angle_increment)
     front_ranges = ranges[start_angle:end_angle]
 
-    # 5️⃣ Find the index of the farthest point (deepest gap)
+    #Find the index of the farthest point (deepest gap)
     max_idx = front_ranges.index(max(front_ranges))
-    best_angle = data.angle_min + (start_angle + max_idx) * data.angle_increment
+    best_angle = (data.angle_min + (start_angle + max_idx)) * data.angle_increment
 
-    # 6️⃣ Convert steering angle → control signal range [-100, 100]
+    #Convert steering angle control signal range [-100, 100]
     steering = math.degrees(best_angle)
     steering = max(-100, min(100, (steering / 90.0) * 100))
 
-    # 7️⃣ (optional) Adjust velocity based on obstacle proximity
-    min_front = min(front_ranges)
-    if min_front < 0.5:
-        vel = 0  # stop if too close
-    elif min_front < 1.0:
-        vel = 15
-    else:
-        vel = 25
+    # (optional) Adjust velocity based on obstacle proximity
+    # min_front = min(front_ranges)
+    # if min_front < 0.2:
+    #     vel = 10  # stop if too close
+    # else:
+    #     vel = 25
+    vel = 15
 
-    # 8️⃣ Publish the control message
+    # Publish the control message
     command = AckermannDrive()
     command.steering_angle = steering
     command.speed = vel
