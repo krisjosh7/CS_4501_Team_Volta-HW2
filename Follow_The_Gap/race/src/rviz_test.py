@@ -21,6 +21,7 @@ steering_pub = rospy.Publisher("/steering_arrow", Marker, queue_size=2)
 latest_scan = None
 latest_angle = None
 latest_distance = None
+prev_disparity_count = 0
 
 
 def scan_callback(data):
@@ -67,32 +68,42 @@ def timer_callback(event):
     footprint_pub.publish(footprint)
     
     # Visualization 2: Disparity Points from processed scan
+    global prev_disparity_count
     if latest_scan:
         markers = MarkerArray()
         ranges = latest_scan.ranges
+        disparity_indices = []
         for i in range(len(ranges) - 1):
             if abs(ranges[i + 1] - ranges[i]) > 0.1:  # disparity threshold
-                angle = latest_scan.angle_min + i * latest_scan.angle_increment
-                r = ranges[i]
-                
-                marker = Marker()
-                marker.header.frame_id = "car_8_laser"  # Changed to car_8
-                marker.header.stamp = rospy.Time.now()
-                marker.type = Marker.SPHERE
-                marker.id = i
-                marker.scale.x = marker.scale.y = marker.scale.z = 0.2
-                marker.color.r = 1.0
-                marker.color.g = 0.0
-                marker.color.b = 0.0
-                marker.color.a = 1.0
-                
-                marker.pose.position.x = r * math.cos(angle)
-                marker.pose.position.y = r * math.sin(angle)
-                marker.pose.position.z = 0
-                
-                markers.markers.append(marker)
-        
+                disparity_indices.append(i)
+        # Create markers for current disparities
+        for idx, i in enumerate(disparity_indices):
+            angle = latest_scan.angle_min + i * latest_scan.angle_increment
+            r = ranges[i]
+            marker = Marker()
+            marker.header.frame_id = "car_8_laser"
+            marker.header.stamp = rospy.Time.now()
+            marker.type = Marker.SPHERE
+            marker.id = idx
+            marker.scale.x = marker.scale.y = marker.scale.z = 0.2
+            marker.color.r = 1.0
+            marker.color.g = 0.0
+            marker.color.b = 0.0
+            marker.color.a = 1.0
+            marker.pose.position.x = r * math.cos(angle)
+            marker.pose.position.y = r * math.sin(angle)
+            marker.pose.position.z = 0
+            markers.markers.append(marker)
+        # Delete any leftover markers from previous frame
+        for idx in range(len(disparity_indices), prev_disparity_count):
+            marker = Marker()
+            marker.header.frame_id = "car_8_laser"
+            marker.header.stamp = rospy.Time.now()
+            marker.action = Marker.DELETE
+            marker.id = idx
+            markers.markers.append(marker)
         disparities_pub.publish(markers)
+        prev_disparity_count = len(disparity_indices)
     
     # Visualization 3: Target Point (deepest gap)
     if latest_distance is not None and latest_angle is not None:
