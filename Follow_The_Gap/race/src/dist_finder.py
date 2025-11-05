@@ -9,168 +9,143 @@ from std_msgs.msg import Float32MultiArray
 # Constants for LIDAR processing
 angle_range = 240  # Hokuyo 4LX has 240 degrees FoV for scan
 disp_threshold = 0.15  # Threshold for detecting disparities
-car_width = 0.33  # Car width in meters
+car_width = 0.4  # Car width in meters
 
 # Publishers for processed data
 processed_scan_pub = rospy.Publisher('/car_8/processed_scan', LaserScan, queue_size=1)
 gap_info_pub = rospy.Publisher('/car_8/gap_info', Float32MultiArray, queue_size=1)
 
 def calcSamplesToExtend(theta, radius):
-        half_width = (car_width / 2.0) + 0.05  # tolerance
-        theta_span_half = half_width/radius
-        return int(math.ceil(theta_span_half / theta))
+    half_width = (car_width / 2.0) + 0.05  # tolerance
+    theta_span_half = half_width / max(radius, 1e-3)
+    return int(math.ceil(theta_span_half / max(abs(theta), 1e-6)))
 
 def clampDist(ranges, clamp):
     for idx, distance in enumerate(ranges):
         if distance >= clamp:
             ranges[idx] = clamp
-            
 
 def getAngleFromIndex(data, idx):
     angle_rad = data.angle_min + idx * data.angle_increment
     return math.degrees(angle_rad) + 90
 
-def getRange(data,angle):
-	# data: single message from topic /scan
+def getRange(data, angle):
     # angle: between -30 to 210 degrees, where 0 degrees is directly to the right, and 90 degrees is directly in front
-    # Outputs length in meters to object with angle in lidar scan field of view
-    # Make sure to take care of NaNs etc.
-	
-	angle_rad = math.radians((angle-90))
-	idx = int(round((angle_rad - data.angle_min) / data.angle_increment))
+    angle_rad = math.radians((angle-90))
+    idx = int(round((angle_rad - data.angle_min) / data.angle_increment))
 
-	n = len(data.ranges)
-	if idx < 0:
-		idx = 0
-	elif idx >= n:
-		idx = n - 1
+    n = len(data.ranges)
+    if idx < 0:
+        idx = 0
+    elif idx >= n:
+        idx = n - 1
 
-	def valid(r):
-		return (
+    def valid(r):
+        return (
             r is not None
             and not math.isnan(r)
             and not math.isinf(r)
             and data.range_min <= r <= data.range_max
         )
 
-	r = data.ranges[idx]
-	if valid(r):
-		return r
-	
-	return data.range_max
+    r = data.ranges[idx]
+    if valid(r):
+        return r
+
+    return data.range_max
 
 def callback(data):
-    global vel
-
     ranges = list(data.ranges)
-
-    start_angle = int((math.radians(-50) - data.angle_min) / data.angle_increment)
-    end_angle   = int((math.radians(50) - data.angle_min) / data.angle_increment)
-   
-
-    #Get lidar ranges and clean them
-    
     n = len(ranges)
 
-    for i in range(start_angle, end_angle):
-        if math.isnan(ranges[i]) or math.isinf(ranges[i]) or ranges[i] >= 3.0:
-            ranges[i] = 3.0
+    # Original sector choice (70) -> indices (may be out of bounds / reversed)
+    start_angle = int((math.radians(-70) - data.angle_min) / data.angle_increment)
+    end_angle   = int((math.radians( 70) - data.angle_min) / data.angle_increment)
 
-    print(ranges)
-			
-    #Find disparities
+    # Clamp and order forward sector bounds -> i_min..i_max
+    i_min = max(0, min(n-1, start_angle))
+    i_max = max(0, min(n-1, end_angle))
+    if i_min > i_max:
+        i_min, i_max = i_max, i_min
+
+    # Get lidar ranges and clean them (keep your 3.0 cap as requested)
+    for i in range(i_min, i_max+1):
+        if i < 0 or i >= n:
+            continue
+        if math.isnan(ranges[i]) or math.isinf(ranges[i]) or ranges[i] >= 4:
+            ranges[i] = 4
+
+    # Find disparities within the forward sector (ensure i+1 is valid)
     disparities = []
-    for i in range(start_angle, end_angle):
+    for i in range(i_min, max(i_min, i_max)):  # up to i_max-1
+        if i+1 > i_max:
+            break
         if abs(ranges[i + 1] - ranges[i]) > disp_threshold:
             disparities.append(i)
 
+    # Inflate obstacles near disparities (your original orientation-dependent logic)
     for i in disparities:
+        if i+1 >= n:
+            continue
         r_close = min(ranges[i], ranges[i + 1])
 
         if r_close <= data.range_min:
-             continue
+            continue
 
         # how many samples correspond to half the car width at this distance
         samples_to_extend = min(calcSamplesToExtend(data.angle_increment, r_close), n)
-        if samples_to_extend < 0:
+        if samples_to_extend <= 0:
             continue
 
         # overwrite from the far side toward same direction
         if ranges[i] < ranges[i + 1]:
-            # obstacle closer on right extend into the gap on the left
+            # obstacle closer on right -> extend into the gap on the left
             for j in range(i + 1, min(i + 1 + samples_to_extend, n)):
                 ranges[j] = min(ranges[j], r_close)
         else:
-            # obstacle closer on left extend into the gap on the right
+            # obstacle closer on left -> extend into the gap on the right
             for j in range(max(0, i - samples_to_extend), i+1):
                 ranges[j] = min(ranges[j], r_close)
 
-    max_idx = ranges.index(max(ranges[start_angle:end_angle]))
-                
-    print(ranges)
+    # ---- choose target as center of the furthest forward-facing arc ----
+    front = np.array(ranges[i_min:i_max+1], dtype=np.float32)
+    if front.size == 0:
+        return
 
-    best_gap_idx = None
-    best_gap_dist = -float('inf')
-    best_gap_len = 0
-    curr_start_idx = None
-    curr_len = 0
-    maxDist = -float('inf')
-    max_dist_idx = None
-    half_width = (car_width / 2.0) + 0.05 
+    max_dist = float(front.max())
+    # Threshold band near the furthest distance (tune 0.85-0.95). Keep small margin over range_min.
+    thr = max(0.90 * max_dist, data.range_min + 0.05)
+    mask = front >= thr
 
-    def update_best_gap(best_idx, best_dist, best_len, start_idx, length):
-        if start_idx is None or length <= 0:
-            return best_idx, best_dist, best_len
-        mid_idx = start_idx + length // 2
-        if not (0 <= mid_idx < n):
-            return best_idx, best_dist, best_len
-        dist_mid = ranges[mid_idx]
-        if (
-            dist_mid > best_dist
-            or (abs(dist_mid - best_dist)  < 0.0001 and length > best_len)
-        ):
-            return mid_idx, dist_mid, length
-        return best_idx, best_dist, best_len
-
-    for beam_idx in range(start_angle, end_angle):
-        if 0<= beam_idx < n:
-            dist = ranges[beam_idx]
-            if dist > maxDist:
-                maxDist = dist
-                max_dist_idx = beam_idx
-
-            if dist > half_width:
-                if curr_start_idx is None:
-                    curr_start_idx = beam_idx
-                    curr_len = 1
-                else:
-                    curr_len += 1
-            
-            else:
-                best_gap_idx, best_gap_dist, best_gap_len = update_best_gap(
-                    best_gap_idx, best_gap_dist, best_gap_len, curr_start_idx, curr_len
-                )
-                curr_start_idx = None
-                curr_len = 0
+    # Find the longest contiguous True run and take its midpoint
+    best_start = best_end = None
+    curr_start = None
+    for k, ok in enumerate(mask):
+        if ok:
+            if curr_start is None:
+                curr_start = k
         else:
-            best_gap_idx, best_gap_dist, best_gap_len = update_best_gap(
-                best_gap_idx, best_gap_dist, best_gap_len, curr_start_idx, curr_len
-            )
-            curr_start_idx = None
-            curr_len = 0
-    best_gap_idx, best_gap_dist, best_gap_len = update_best_gap(
-        best_gap_idx, best_gap_dist, best_gap_len, curr_start_idx, curr_len
-    )
-    
-    if best_gap_idx is not None:
-        target_idx = best_gap_idx
-    elif max_dist_idx is not None:
-        target_idx = max_dist_idx
-    else:   
-        target_idx = max(0, min(n-1, start_angle))
+            if curr_start is not None:
+                s, e = curr_start, k - 1
+                if (best_start is None) or ((e - s) > (best_end - best_start)):
+                    best_start, best_end = s, e
+                curr_start = None
+    # handle trailing run
+    if curr_start is not None:
+        s, e = curr_start, len(mask) - 1
+        if (best_start is None) or ((e - s) > (best_end - best_start)):
+            best_start, best_end = s, e
+
+    # Pick target index
+    if best_start is not None:
+        mid_local = (best_start + best_end) // 2
+        target_idx = i_min + mid_local
+    else:
+        # Fallback: deepest single beam if no run passes the threshold
+        target_idx = i_min + int(np.argmax(front))
     
     target_idx = max(0, min(n-1, target_idx))
-    best_angle = data.angle_min + max_idx * data.angle_increment
+    best_angle = data.angle_min + target_idx * data.angle_increment
     best_distance = ranges[target_idx]
 
 

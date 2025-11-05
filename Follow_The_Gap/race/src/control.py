@@ -25,16 +25,29 @@ def gap_callback(msg):
     best_angle = msg.data[0]  # in radians
     gap_distance = msg.data[1]  # distance to the gap TODO: implement dynamic velocity scaling
     
-    # Convert steering angle → control signal range [-100, 100]
-    steering = math.degrees(best_angle)
-    steering = max(-100, min(100, (steering / 90.0) * 100))
+    # Convert steering angle --> control signal range [-100, 100]
+    target_angle = (math.degrees(best_angle))
+
+    if ((target_angle) >= 30):
+        steering = 100
+    elif(target_angle <= -30):
+        steering = -100
+    else:
+        steering = target_angle * (100/25)
     
     # Add servo offset if needed
     steering += servo_offset
     
     # Determine velocity based on gap distance
-    velocity = 15
-        
+    velocity = 30 - (abs(steering) / 100) * 18
+
+    if(abs(gap_distance) >= 3.5 and abs(steering) <=  20):
+        velocity = 35
+    elif(abs(steering) - 40 <= 20):
+        velocity = 25
+    elif(abs(steering) - 80 <= 20):
+        velocity = 20
+
     # Create and publish command
     command = AckermannDrive()
     command.steering_angle = steering

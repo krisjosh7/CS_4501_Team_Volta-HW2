@@ -130,7 +130,7 @@ def timer_callback(event):
         steering.header.stamp = rospy.Time.now()
         steering.type = Marker.ARROW
         steering.id = 0
-        steering.scale.x = 1.0  # arrow length
+        steering.scale.x = 0.3  # arrow length
         steering.scale.y = 0.1  # arrow width
         steering.scale.z = 0.1  # arrow height
         steering.color.r = 1.0
