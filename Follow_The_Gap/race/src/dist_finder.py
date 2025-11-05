@@ -89,50 +89,90 @@ def extend_disparities(ranges, angle_increment, disparities, min_range):
                 ranges[j] = min(ranges[j], r_close)
 
 
+# (These constants are defined in the global scope of your script)
+# CAR_WIDTH = 0.3
+# SAFETY_MARGIN = 0.05
+
 def find_best_gap(ranges, start_idx, end_idx):
+    """
+    Finds the best gap by prioritizing the *widest* safe gap, then
+    finding the deepest point within that gap.
+    """
     n = len(ranges)
     start_idx = max(0, min(n, start_idx))
-    end_idx = max(start_idx + 1, min(n, end_idx))
+    end_idx = max(start_idx, min(n, end_idx)) # Ensure end_idx >= start_idx
+
+    if end_idx <= start_idx:
+        return start_idx
 
     safety_radius = (CAR_WIDTH / 2.0) + SAFETY_MARGIN
-    best_idx = None
-    best_dist = -float('inf')
-    best_len = 0
 
-    curr_start = None
-    max_dist_idx = None
-    max_dist_val = -float('inf')
+    # --- Variables for finding the widest gap ---
+    best_gap_start = -1
+    best_gap_len = 0
+    curr_gap_start = -1
 
-    def consider_gap(s_idx, e_idx, best_idx, best_dist, best_len):
-        if s_idx is None or e_idx <= s_idx:
-            return best_idx, best_dist, best_len
-        mid_idx = s_idx + (e_idx - s_idx) // 2
-        dist_mid = ranges[mid_idx]
-        gap_len = e_idx - s_idx
-        if dist_mid > best_dist or (abs(dist_mid - best_dist) <= 1e-3 and gap_len > best_len):
-            return mid_idx, dist_mid, gap_len
-        return best_idx, best_dist, best_len
+    # --- Variables for the original fallback logic ---
+    # Tracks the deepest point in the entire 140-degree cone
+    global_max_dist = -float('inf')
+    global_max_dist_idx = start_idx
 
+    # Helper function to process a completed gap
+    def consider_gap(s_idx, e_idx, best_s, best_len):
+        current_len = e_idx - s_idx
+        if current_len > best_len:
+            # This is the new widest gap
+            return s_idx, current_len
+        # Keep the existing best gap
+        return best_s, best_len
+
+    # --- 1. Find the Widest Safe Gap ---
     for idx in range(start_idx, end_idx):
         dist = ranges[idx]
-        if dist > max_dist_val:
-            max_dist_val = dist
-            max_dist_idx = idx
 
+        # Update fallback tracker
+        if dist > global_max_dist:
+            global_max_dist = dist
+            global_max_dist_idx = idx
+
+        # Check if the point is safe
         if dist >= safety_radius:
-            if curr_start is None:
-                curr_start = idx
+            if curr_gap_start == -1:
+                # Start of a new potential gap
+                curr_gap_start = idx
         else:
-            best_idx, best_dist, best_len = consider_gap(curr_start, idx, best_idx, best_dist, best_len)
-            curr_start = None
+            # Point is unsafe, so any gap we were in has now ended
+            if curr_gap_start != -1:
+                best_gap_start, best_gap_len = consider_gap(
+                    curr_gap_start, idx, best_gap_start, best_gap_len
+                )
+                curr_gap_start = -1 # Reset for the next gap
 
-    best_idx, best_dist, best_len = consider_gap(curr_start, end_idx, best_idx, best_dist, best_len)
+    # After the loop, check if we ended inside a safe gap
+    if curr_gap_start != -1:
+        best_gap_start, best_gap_len = consider_gap(
+            curr_gap_start, end_idx, best_gap_start, best_gap_len
+        )
 
-    if best_idx is not None:
-        return best_idx
-    if max_dist_idx is not None:
-        return max_dist_idx
-    return start_idx
+    # --- 2. Find the Deepest Point *within* the Widest Gap ---
+    if best_gap_start != -1:
+        # We found at least one safe gap
+        widest_gap_end = best_gap_start + best_gap_len
+        
+        target_idx = best_gap_start
+        max_dist_in_gap = -float('inf')
+
+        for idx in range(best_gap_start, widest_gap_end):
+            if ranges[idx] > max_dist_in_gap:
+                max_dist_in_gap = ranges[idx]
+                target_idx = idx
+        
+        return target_idx
+    else:
+        # --- 3. Fallback: No safe gaps were found ---
+        # Revert to the original code's fallback behavior:
+        # target the deepest point found anywhere in the arc.
+        return global_max_dist_idx
 
 
 def callback(data):
