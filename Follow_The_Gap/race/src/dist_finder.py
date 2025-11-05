@@ -9,7 +9,7 @@ from std_msgs.msg import Float32MultiArray
 # Constants for LIDAR processing
 angle_range = 240  # Hokuyo 4LX has 240 degrees FoV for scan
 disp_threshold = 0.15  # Threshold for detecting disparities
-car_width = 0.5  # Car width in meters
+car_width = 0.2  # Car width in meters
 
 # Publishers for processed data
 processed_scan_pub = rospy.Publisher('/car_8/processed_scan', LaserScan, queue_size=1)
@@ -69,40 +69,47 @@ def callback(data):
     for i in range(start_angle, end_angle):
         if math.isnan(ranges[i]) or math.isinf(ranges[i]):
             ranges[i] = 5.0
+
+    print(ranges)
 			
     #Find disparities
     disparities = []
     for i in range(start_angle, end_angle):
-        if math.isnan(ranges[i]) and math.isnan(ranges[i+1]):
-            continue
-        elif abs(ranges[i + 1] - ranges[i]) > disp_threshold:
+        if abs(ranges[i + 1] - ranges[i]) > disp_threshold:
             disparities.append(i)
     
     disp_angles = []
     for i in range(len(disparities)):
           disp_angles.append(int(getAngleFromIndex(data, disparities[i])))
 
-    # for i in disparities:
-    #     r_close = min(ranges[i], ranges[i + 1])
+    #print(disp_angles)
 
-    #     # how many samples correspond to half the car width at this distance
-    #     samples_to_extend = calcSamplesToExtend(data.angle_increment, r_close)
-    #     if samples_to_extend <= 0:
-    #         continue
+    for i in disparities:
+        r_close = min(ranges[i], ranges[i + 1])
 
-    #     # overwrite from the far side toward same direction
-    #     if ranges[i] < ranges[i + 1]:
-    #         # obstacle closer on right extend into the gap on the left
-    #         for j in range(i + 1, min(i + 1 + samples_to_extend, n)):
-    #             ranges[j] = min(ranges[j], r_close)
-    #     else:
-    #         # obstacle closer on left extend into the gap on the right
-    #         for j in range(max(0, i - samples_to_extend), i+1):
-    #             ranges[j] = min(ranges[j], r_close)
+        if r_close <= data.range_min:
+             continue
 
-    #Find the index of the farthest point (deepest gap)
-    #max_idx = ranges.index(max(ranges))
-    #best_angle = getAngleFromIndex(data, max_idx)
+        # how many samples correspond to half the car width at this distance
+        samples_to_extend = min(calcSamplesToExtend(data.angle_increment, r_close), n)
+        if samples_to_extend < 0:
+            continue
+
+        # overwrite from the far side toward same direction
+        if ranges[i] < ranges[i + 1]:
+            # obstacle closer on right extend into the gap on the left
+            for j in range(i + 1, min(i + 1 + samples_to_extend, n)):
+                ranges[j] = min(ranges[j], r_close)
+        else:
+            # obstacle closer on left extend into the gap on the right
+            for j in range(max(0, i - samples_to_extend), i+1):
+                ranges[j] = min(ranges[j], r_close)
+
+    # Find the index of the farthest point (deepest gap)
+    # max_idx = ranges.index(max(ranges))
+    # best_angle = getAngleFromIndex(data, max_idx)
+                
+    print(ranges)
 
     best_gap_idx = None
     best_gap_dist = -float('inf')
@@ -122,10 +129,7 @@ def callback(data):
         dist_mid = ranges[mid_idx]
         if (
             dist_mid > best_dist
-            or (
-                math.isclose(dist_mid, best_dist, rel_tol=1e-3, abs_tol=1e-3)
-                and length > best_len
-            )
+            or (abs(dist_mid - best_dist)  < 0.0001 and length > best_len)
         ):
             return mid_idx, dist_mid, length
         return best_idx, best_dist, best_len
@@ -171,10 +175,6 @@ def callback(data):
     best_angle = data.angle_min + target_idx * data.angle_increment
     best_distance = ranges[target_idx]
 
-
-    
-
-    print(getAngleFromIndex(data, target_idx))
 
     # Publish processed scan
     processed_scan = LaserScan()
