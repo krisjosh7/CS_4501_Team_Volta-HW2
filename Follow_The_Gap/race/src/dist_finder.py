@@ -113,24 +113,22 @@ def callback(data):
     max_dist_idx = None
     half_width = (car_width / 2.0) + 0.05 
 
-    def update_best_gap(start_idx, length):
-        nonlocal best_gap_idx, best_gap_dist, best_gap_len
+    def update_best_gap(best_idx, best_dist, best_len, start_idx, length):
         if start_idx is None or length <= 0:
-            return
+            return best_idx, best_dist, best_len
         mid_idx = start_idx + length // 2
         if not (0 <= mid_idx < n):
-            return
-        dist = ranges[mid_idx]
+            return best_idx, best_dist, best_len
+        dist_mid = ranges[mid_idx]
         if (
-            dist > best_gap_dist
+            dist_mid > best_dist
             or (
-                math.isclose(dist, best_gap_dist, rel_tol=1e-3, abs_tol=1e-3)
-                and length > best_gap_len
+                math.isclose(dist_mid, best_dist, rel_tol=1e-3, abs_tol=1e-3)
+                and length > best_len
             )
         ):
-            best_gap_idx = mid_idx
-            best_gap_dist = dist
-            best_gap_len = length
+            return mid_idx, dist_mid, length
+        return best_idx, best_dist, best_len
 
     for beam_idx in range(start_angle, end_angle):
         if 0<= beam_idx < n:
@@ -147,14 +145,20 @@ def callback(data):
                     curr_len += 1
             
             else:
-                update_best_gap(curr_start_idx, curr_len)
+                best_gap_idx, best_gap_dist, best_gap_len = update_best_gap(
+                    best_gap_idx, best_gap_dist, best_gap_len, curr_start_idx, curr_len
+                )
                 curr_start_idx = None
                 curr_len = 0
         else:
-            update_best_gap(curr_start_idx, curr_len)
+            best_gap_idx, best_gap_dist, best_gap_len = update_best_gap(
+                best_gap_idx, best_gap_dist, best_gap_len, curr_start_idx, curr_len
+            )
             curr_start_idx = None
             curr_len = 0
-    update_best_gap(curr_start_idx, curr_len)
+    best_gap_idx, best_gap_dist, best_gap_len = update_best_gap(
+        best_gap_idx, best_gap_dist, best_gap_len, curr_start_idx, curr_len
+    )
     
     if best_gap_idx is not None:
         target_idx = best_gap_idx
