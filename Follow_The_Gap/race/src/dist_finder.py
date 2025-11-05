@@ -170,9 +170,8 @@ def find_best_gap(ranges, start_idx, end_idx):
         return target_idx
     else:
         # --- 3. Fallback: No safe gaps were found ---
-        # Revert to the original code's fallback behavior:
-        # target the deepest point found anywhere in the arc.
-        return global_max_dist_idx
+        # Instead of returning global_max_dist_idx, return None.
+        return None
 
 
 def callback(data):
@@ -212,6 +211,21 @@ def callback(data):
     processed_scan.intensities = data.intensities
     processed_scan.ranges = ranges
     processed_scan_pub.publish(processed_scan)
+
+    if target_idx is None:
+        # No safe gap was found. Publish a "stop" signal.
+        # We send angle 0.0 and distance 0.0.
+        # The driving node MUST be programmed to stop if distance is 0.
+        best_angle = 0.0
+        best_distance = 0.0
+    else:
+        # A safe gap was found, proceed as normal.
+        best_angle = data.angle_min + target_idx * data.angle_increment
+        best_distance = ranges[target_idx]
+
+    gap_info = Float32MultiArray()
+    gap_info.data = [best_angle, best_distance]
+    gap_info_pub.publish(gap_info)
 
     gap_info = Float32MultiArray()
     gap_info.data = [best_angle, best_distance]
