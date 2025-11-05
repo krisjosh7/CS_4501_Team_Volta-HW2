@@ -1,201 +1,193 @@
 #!/usr/bin/env python
 
-import rospy
 import math
-import numpy as np
+import rospy
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Float32MultiArray
 
-# Constants for LIDAR processing
-angle_range = 240  # Hokuyo 4LX has 240 degrees FoV for scan
-disp_threshold = 0.15  # Threshold for detecting disparities
-car_width = 0.3  # Car width in meters
+# Configuration
+DISP_THRESHOLD = 0.15  # disparity jump (m)
+CAR_WIDTH = 0.3        # metres
+SAFETY_MARGIN = 0.05   # add-on clearance (m)
 
-# Publishers for processed data
 processed_scan_pub = rospy.Publisher('/car_8/processed_scan', LaserScan, queue_size=1)
 gap_info_pub = rospy.Publisher('/car_8/gap_info', Float32MultiArray, queue_size=1)
 
-def calcSamplesToExtend(theta, radius):
-        half_width = (car_width / 2.0) + 0.05  # tolerance
-        theta_span_half = half_width/radius
-        return int(math.ceil(theta_span_half / theta))
 
-def clampDist(ranges, clamp):
-    for idx, distance in enumerate(ranges):
-        if distance >= clamp:
-            ranges[idx] = clamp
-            
-
-def getAngleFromIndex(data, idx):
-    angle_rad = data.angle_min + idx * data.angle_increment
-    return math.degrees(angle_rad) + 90
-
-def getRange(data,angle):
-	# data: single message from topic /scan
-    # angle: between -30 to 210 degrees, where 0 degrees is directly to the right, and 90 degrees is directly in front
-    # Outputs length in meters to object with angle in lidar scan field of view
-    # Make sure to take care of NaNs etc.
-	
-	angle_rad = math.radians((angle-90))
-	idx = int(round((angle_rad - data.angle_min) / data.angle_increment))
-
-	n = len(data.ranges)
-	if idx < 0:
-		idx = 0
-	elif idx >= n:
-		idx = n - 1
-
-	def valid(r):
-		return (
-            r is not None
-            and not math.isnan(r)
-            and not math.isinf(r)
-            and data.range_min <= r <= data.range_max
-        )
-
-	r = data.ranges[idx]
-	if valid(r):
-		return r
-	
-	return data.range_max
-
-def callback(data):
-    global vel
+def sanitize_ranges(data):
+    """Replace invalid readings using nearest neighbours and clamp to [min,max]."""
+    min_range = max(data.range_min, 0.05)
+    max_range = data.range_max if math.isfinite(data.range_max) else min_range + 10.0
 
     ranges = list(data.ranges)
-
-    start_angle = int((math.radians(-70) - data.angle_min) / data.angle_increment)
-    end_angle   = int((math.radians(70) - data.angle_min) / data.angle_increment)
-   
-
-    #Get lidar ranges and clean them
-    
     n = len(ranges)
 
-    for i in range(start_angle, end_angle):
-        if math.isnan(ranges[i]) or math.isinf(ranges[i]) or ranges[i] >= 3.0:
-            ranges[i] = 3.0
+    def valid(val):
+        return math.isfinite(val) and min_range <= val <= max_range
 
-    print(ranges)
-			
-    #Find disparities
-    disparities = []
-    for i in range(start_angle, end_angle):
-        if abs(ranges[i + 1] - ranges[i]) > disp_threshold:
-            disparities.append(i)
+    # mark invalid values
+    for i in range(n):
+        r = ranges[i]
+        if valid(r):
+            ranges[i] = min(max(r, min_range), max_range)
+        else:
+            ranges[i] = None
 
-    for i in disparities:
-        r_close = min(ranges[i], ranges[i + 1])
-
-        if r_close <= data.range_min:
-             continue
-
-        # how many samples correspond to half the car width at this distance
-        samples_to_extend = min(calcSamplesToExtend(data.angle_increment, r_close), n)
-        if samples_to_extend < 0:
+    # fill runs of None by interpolation / neighbours
+    i = 0
+    while i < n:
+        if ranges[i] is not None:
+            i += 1
             continue
 
-        # overwrite from the far side toward same direction
-        if ranges[i] < ranges[i + 1]:
-            # obstacle closer on right extend into the gap on the left
-            for j in range(i + 1, min(i + 1 + samples_to_extend, n)):
+        start = i
+        while i < n and ranges[i] is None:
+            i += 1
+        end = i  # exclusive
+
+        left_idx = start - 1
+        right_idx = end
+        left_val = ranges[left_idx] if left_idx >= 0 else None
+        right_val = ranges[right_idx] if right_idx < n else None
+
+        if left_val is not None and right_val is not None:
+            span = right_idx - left_idx
+            for offset, idx in enumerate(range(start, end), start=1):
+                blend = left_val + (right_val - left_val) * (offset / span)
+                ranges[idx] = min(max(blend, min_range), max_range)
+        elif left_val is not None:
+            for idx in range(start, end):
+                ranges[idx] = left_val
+        elif right_val is not None:
+            for idx in range(start, end):
+                ranges[idx] = right_val
+        else:
+            for idx in range(start, end):
+                ranges[idx] = max_range
+
+    return ranges, min_range, max_range
+
+
+def calc_samples_to_extend(angle_increment, obstacle_distance):
+    half_width = (CAR_WIDTH / 2.0) + SAFETY_MARGIN
+    safe_dist = max(obstacle_distance, 0.05)
+    span = math.atan2(half_width, safe_dist)
+    return max(1, int(math.ceil(span / max(abs(angle_increment), 1e-6))))
+
+
+def extend_disparities(ranges, angle_increment, disparities, min_range):
+    n = len(ranges)
+    for idx in disparities:
+        if idx < 0 or idx + 1 >= n:
+            continue
+
+        r_close = max(min(ranges[idx], ranges[idx + 1]), min_range)
+        samples = min(calc_samples_to_extend(angle_increment, r_close), n)
+
+        if ranges[idx] < ranges[idx + 1]:
+            # obstacle on right, extend leftwards
+            start = idx + 1
+            end = min(n, start + samples)
+            for j in range(start, end):
                 ranges[j] = min(ranges[j], r_close)
         else:
-            # obstacle closer on left extend into the gap on the right
-            for j in range(max(0, i - samples_to_extend), i+1):
+            # obstacle on left, extend rightwards
+            end = idx + 1
+            start = max(0, end - samples)
+            for j in range(start, end):
                 ranges[j] = min(ranges[j], r_close)
-                
-    print(ranges)
 
-    best_gap_idx = None
-    best_gap_dist = -float('inf')
-    best_gap_len = 0
-    curr_start_idx = None
-    curr_len = 0
-    maxDist = -float('inf')
+
+def find_best_gap(ranges, start_idx, end_idx):
+    n = len(ranges)
+    start_idx = max(0, min(n, start_idx))
+    end_idx = max(start_idx + 1, min(n, end_idx))
+
+    safety_radius = (CAR_WIDTH / 2.0) + SAFETY_MARGIN
+    best_idx = None
+    best_dist = -float('inf')
+    best_len = 0
+
+    curr_start = None
     max_dist_idx = None
-    half_width = (car_width / 2.0) + 0.05 
+    max_dist_val = -float('inf')
 
-    def update_best_gap(best_idx, best_dist, best_len, start_idx, length):
-        if start_idx is None or length <= 0:
+    def consider_gap(s_idx, e_idx, best_idx, best_dist, best_len):
+        if s_idx is None or e_idx <= s_idx:
             return best_idx, best_dist, best_len
-        mid_idx = start_idx + length // 2
-        if not (0 <= mid_idx < n):
-            return best_idx, best_dist, best_len
+        mid_idx = s_idx + (e_idx - s_idx) // 2
         dist_mid = ranges[mid_idx]
-        if (
-            dist_mid > best_dist
-            or (abs(dist_mid - best_dist)  < 0.0001 and length > best_len)
-        ):
-            return mid_idx, dist_mid, length
+        gap_len = e_idx - s_idx
+        if dist_mid > best_dist or (abs(dist_mid - best_dist) <= 1e-3 and gap_len > best_len):
+            return mid_idx, dist_mid, gap_len
         return best_idx, best_dist, best_len
 
-    for beam_idx in range(start_angle, end_angle):
-        if 0<= beam_idx < n:
-            dist = ranges[beam_idx]
-            if dist > maxDist:
-                maxDist = dist
-                max_dist_idx = beam_idx
+    for idx in range(start_idx, end_idx):
+        dist = ranges[idx]
+        if dist > max_dist_val:
+            max_dist_val = dist
+            max_dist_idx = idx
 
-            if dist > half_width:
-                if curr_start_idx is None:
-                    curr_start_idx = beam_idx
-                    curr_len = 1
-                else:
-                    curr_len += 1
-            
-            else:
-                best_gap_idx, best_gap_dist, best_gap_len = update_best_gap(
-                    best_gap_idx, best_gap_dist, best_gap_len, curr_start_idx, curr_len
-                )
-                curr_start_idx = None
-                curr_len = 0
+        if dist >= safety_radius:
+            if curr_start is None:
+                curr_start = idx
         else:
-            best_gap_idx, best_gap_dist, best_gap_len = update_best_gap(
-                best_gap_idx, best_gap_dist, best_gap_len, curr_start_idx, curr_len
-            )
-            curr_start_idx = None
-            curr_len = 0
-    best_gap_idx, best_gap_dist, best_gap_len = update_best_gap(
-        best_gap_idx, best_gap_dist, best_gap_len, curr_start_idx, curr_len
-    )
-    
-    if best_gap_idx is not None:
-        target_idx = best_gap_idx
-    elif max_dist_idx is not None:
-        target_idx = max_dist_idx
-    else:   
-        target_idx = max(0, min(n-1, start_angle))
-    
-    target_idx = max(0, min(n-1, target_idx))
+            best_idx, best_dist, best_len = consider_gap(curr_start, idx, best_idx, best_dist, best_len)
+            curr_start = None
+
+    best_idx, best_dist, best_len = consider_gap(curr_start, end_idx, best_idx, best_dist, best_len)
+
+    if best_idx is not None:
+        return best_idx
+    if max_dist_idx is not None:
+        return max_dist_idx
+    return start_idx
+
+
+def callback(data):
+    ranges, min_range, _ = sanitize_ranges(data)
+    n = len(ranges)
+
+    forward_start = int((math.radians(-70) - data.angle_min) / data.angle_increment)
+    forward_end = int((math.radians(70) - data.angle_min) / data.angle_increment)
+    if forward_start > forward_end:
+        forward_start, forward_end = forward_end, forward_start
+    forward_start = max(0, forward_start)
+    forward_end = min(n, forward_end)
+    if forward_end <= forward_start:
+        forward_start = 0
+        forward_end = n
+
+    disparities = []
+    for i in range(max(0, forward_start - 1), min(n - 1, forward_end)):
+        if abs(ranges[i + 1] - ranges[i]) > DISP_THRESHOLD:
+            disparities.append(i)
+
+    extend_disparities(ranges, data.angle_increment, disparities, min_range)
+
+    target_idx = find_best_gap(ranges, forward_start, forward_end)
     best_angle = data.angle_min + target_idx * data.angle_increment
     best_distance = ranges[target_idx]
 
-
-    # Publish processed scan
     processed_scan = LaserScan()
     processed_scan.header = data.header
     processed_scan.angle_min = data.angle_min
-    processed_scan.intensities = data.intensities
     processed_scan.angle_max = data.angle_max
     processed_scan.angle_increment = data.angle_increment
     processed_scan.time_increment = data.time_increment
     processed_scan.scan_time = data.scan_time
     processed_scan.range_min = data.range_min
     processed_scan.range_max = data.range_max
-
+    processed_scan.intensities = data.intensities
     processed_scan.ranges = ranges
     processed_scan_pub.publish(processed_scan)
 
-    # Publish gap info
     gap_info = Float32MultiArray()
-    gap_info.data = [best_angle, best_distance]  # angle and distance to gap
+    gap_info.data = [best_angle, best_distance]
     gap_info_pub.publish(gap_info)
 
-if __name__ == '__main__':
 
-    print("Hokuyo LIDAR node started")
-    rospy.init_node('dist_finder',anonymous = True)
-	# TODO: Make sure you are subscribing to the correct car_x/scan topic on your racecar
+if __name__ == '__main__':
+    rospy.init_node('dist_finder', anonymous=True)
     rospy.Subscriber("/car_8/scan", LaserScan, callback)
     rospy.spin()
