@@ -15,7 +15,7 @@ gap_info_pub = rospy.Publisher('/car_8/gap_info', Float32MultiArray, queue_size=
 
 
 def sanitize_ranges(data):
-    """Replace invalid readings using nearest neighbours and clamp to [min,max]."""
+    """Replace invalid readings using neighbouring context and clamp to [min,max]."""
     min_range = max(data.range_min, 0.05)
     max_range = data.range_max if math.isfinite(data.range_max) else min_range + 10.0
 
@@ -33,37 +33,28 @@ def sanitize_ranges(data):
         else:
             ranges[i] = None
 
-    # fill runs of None by interpolation / neighbours
-    i = 0
-    while i < n:
-        if ranges[i] is not None:
-            i += 1
-            continue
-
-        start = i
-        while i < n and ranges[i] is None:
-            i += 1
-        end = i  # exclusive
-
-        left_idx = start - 1
-        right_idx = end
-        left_val = ranges[left_idx] if left_idx >= 0 else None
-        right_val = ranges[right_idx] if right_idx < n else None
-
-        if left_val is not None and right_val is not None:
-            span = right_idx - left_idx
-            for offset, idx in enumerate(range(start, end), start=1):
-                blend = left_val + (right_val - left_val) * (offset / span)
-                ranges[idx] = min(max(blend, min_range), max_range)
-        elif left_val is not None:
-            for idx in range(start, end):
-                ranges[idx] = left_val
-        elif right_val is not None:
-            for idx in range(start, end):
-                ranges[idx] = right_val
+    # forward fill using previous valid value
+    prev_val = None
+    for i in range(n):
+        if ranges[i] is None:
+            if prev_val is not None:
+                ranges[i] = prev_val
         else:
-            for idx in range(start, end):
-                ranges[idx] = max_range
+            prev_val = ranges[i]
+
+    # backward fill using next valid value
+    next_val = None
+    for i in reversed(range(n)):
+        if ranges[i] is None:
+            if next_val is not None:
+                ranges[i] = next_val
+        else:
+            next_val = ranges[i]
+
+    # any remaining None (all readings invalid) → max_range
+    for i in range(n):
+        if ranges[i] is None:
+            ranges[i] = max_range
 
     return ranges, min_range, max_range
 
