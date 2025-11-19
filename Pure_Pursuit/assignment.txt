@@ -1,0 +1,25 @@
+This folder contains our team code for Assignment 4 - SLAM, Particle Filter, and Pure Pursuit, which is described in Canvas as follows:
+
+This assignment covers ROS Cartographer SLAM, AMCL Particle Filter, and Pure Pursuit Trajectory Following Method.
+
+Read the handout carefully and follow the instructions. When in doubt, post it on Piazza.
+Its a lengthy handout, only because we have tried to provide very detailed instructions. As long as you follow exactly what is described you should reach the point where you can build the map with Cartographer, run AMCL localization, and then implement trajectory following with pure pursuit. 
+
+The following is provided: 
+- ROS Cartographer package
+- ROS AMCL package
+- f1tenth_purepursuit custom package
+
+You will:
+- Create a map using Cartographer (launch file provided)
+- Localize the car in the map using a particle filter and log waypoints for a reference trajectory (code provided)
+- Implement pure pursuit (only template code provided - you will complete).
+
+Detailed instructions on what to install, what to prepare, what to upload, what to demo and grading breakdown for everything is in the assignment handout. Please read it thoroughly and completely.
+
+Submit the following as team_name_a04.zip containing the 4 things below. One submission needed per team. Details for each in the handout.
+
+- PDF assignment report 
+- The base_map.pgm file for the map your team created.
+- The f1tenth_purepursuit package you created with the pure_pursuit.py node and any launch files you created
+- Link to a youtube video that shows each stage - mapping, localization, and trajectory following.
