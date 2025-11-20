@@ -175,8 +175,8 @@ def purepursuit_control_node(data):
     # TODO 6: Implement Dynamic Velocity Scaling instead of a constant speed
     
     # Decrease speed for sharper turns.
-    max_speed = 4.0  # m/s, tune this
-    min_speed = 1.5  # m/s, tune this
+    max_speed = 40.0  # m/s, tune this
+    min_speed = 15.0  # m/s, tune this
     
     # Linearly scale speed based on the magnitude of the steering angle
     abs_steering = abs(command.steering_angle)
