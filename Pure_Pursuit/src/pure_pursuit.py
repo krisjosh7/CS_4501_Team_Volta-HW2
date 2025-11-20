@@ -10,6 +10,7 @@ from ackermann_msgs.msg import AckermannDrive
 from geometry_msgs.msg import PolygonStamped
 from geometry_msgs.msg import Point32
 from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path # For path visualization
 import tf
 
 # Global variables for storing the path, path resolution, frame ID, and car details
@@ -22,6 +23,7 @@ trajectory_name     = str(sys.argv[2])
 # Publishers for sending driving commands and visualizing the control polygon
 command_pub         = rospy.Publisher('/{}/offboard/command'.format(car_name), AckermannDrive, queue_size = 1)
 polygon_pub         = rospy.Publisher('/{}/purepursuit_control/visualize'.format(car_name), PolygonStamped, queue_size = 1)
+path_pub            = rospy.Publisher('/{}/purepursuit_control/path'.format(car_name), Path, queue_size=1, latch=True)
 
 # Global variables for waypoint sequence and current polygon
 global wp_seq
@@ -48,6 +50,20 @@ def construct_path():
          dx = plan[index][0] - plan[index-1][0]
          dy = plan[index][1] - plan[index-1][1]
          path_resolution.append(math.sqrt(dx*dx + dy*dy))
+
+    # Create and publish the path for visualization
+    path_msg = Path()
+    path_msg.header.frame_id = frame_id
+    path_msg.header.stamp = rospy.Time.now()
+    for waypoint in plan:
+        pose = PoseStamped()
+        pose.header.frame_id = frame_id
+        pose.header.stamp = path_msg.header.stamp
+        pose.pose.position.x = waypoint[0]
+        pose.pose.position.y = waypoint[1]
+        pose.pose.orientation.w = 1.0
+        path_msg.poses.append(pose)
+    path_pub.publish(path_msg)
 
 
 # Steering Range from -100.0 to 100.0
@@ -189,6 +205,7 @@ def purepursuit_control_node(data):
     control_polygon.header.stamp    = rospy.Time.now()
     wp_seq = wp_seq + 1
     polygon_pub.publish(control_polygon)
+    
 if __name__ == '__main__':
 
     try:
