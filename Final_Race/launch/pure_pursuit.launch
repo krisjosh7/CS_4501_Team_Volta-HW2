@@ -1,0 +1,62 @@
+<launch>
+    <!-- ========================= -->
+    # CONFIGURATION ARGUMENTS
+    <!-- ========================= -->
+    
+    # Network / Machine Settings
+    <!-- UPDATED: Set to your specific IP address -->
+    <arg name="car_hostname" default="192.168.1.1" />  
+    <arg name="car_user"     default="nvidia" />       
+    <arg name="env_script"   default="~/depend_ws/remote_env_loader.sh" />
+    
+    # Node Arguments
+    <arg name="raceline_map" default="base_map_raceline" />
+    <arg name="rviz_conf"    default="~/Downloads/localization_viz.rviz" />
+
+    <!-- ========================= -->
+    # REMOTE MACHINE DEFINITION
+    <!-- ========================= -->
+    
+    # This defines the SSH connection to the car
+    <machine name="race_car" 
+             address="$(arg car_hostname)" 
+             user="$(arg car_user)" 
+             env-loader="$(arg env_script)" 
+             default="never" 
+             timeout="10.0" />
+
+    <!-- ========================= -->
+    # NODES RUNNING ON THE CAR (SSH)
+    <!-- ========================= -->
+
+    # 1. Move Base (Driver/Low Level)
+    <include file="$(find move_base)/launch/move_base.launch" machine="race_car">
+        <arg name="listen_offboard" value="true" />
+    </include>
+
+    # 2. Particle Filter / SLAM
+    <include file="$(find particle_filter)/launch/slam.launch.py" machine="race_car" />
+
+    # 3. Pure Pursuit Node
+    <node pkg="f1tenth_purepursuit" 
+          type="final_pure_pursuit.py" 
+          name="pure_pursuit_node" 
+          machine="race_car" 
+          output="screen" 
+          args="$(arg car_hostname) $(arg raceline_map)">
+    </node>
+
+    <!-- ========================= -->
+    # NODES RUNNING LOCALLY (LAPTOP)
+    <!-- ========================= -->
+
+    # 4. Remote Teleop (Joystick/Keyboard on laptop)
+    <include file="$(find move_base)/launch/remote_teleop.launch" />
+
+    # 5. RViz Visualization
+    <node pkg="rviz" 
+          type="rviz" 
+          name="rviz" 
+          args="-d $(arg rviz_conf)" />
+
+</launch>
