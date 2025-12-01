@@ -1,27 +1,36 @@
 <launch>
+
+     
     <!-- ========= ARGS ========= -->
-    <!-- Car namespace (car_9 -> car_8 as requested) -->
+    <!-- Car namespace -->
     <arg name="car_ns"  default="car_8"/>
 
     <!-- SSH info for the car -->
     <arg name="car_ip"   default="192.168.1.1"/>
     <arg name="car_user" default="nvidia"/>
 
-    <!-- RViz config file (update 'race' if this file lives in a different package) -->
+    <!-- RViz config file -->
     <arg name="rviz_config" default="$(find race)/localization_viz.rviz"/>
 
+    <include file="$(find move_base)/launch/remote_teleop.launch" />
+
+
+
+    <!-- 5) RViz with localization config (run locally) -->
+    <!-- localization_viz.rviz should live in the package used above in rviz_config -->
+    <node pkg="rviz"
+          type="rviz"
+          name="localization_rviz"
+          args="-d $(arg rviz_config)"
+          launch-prefix="gnome-terminal -e"
+          output="screen" />
+
     <!-- ========= REMOTE MACHINE (CAR) ========= -->
-    <!-- ROS will SSH to this machine and start the nodes there -->
+    <!-- SSH to this machine and start the nodes there -->
     <machine name="car"
              address="$(arg car_ip)"
              user="$(arg car_user)" />
 
-    <!-- 1) move_base on the car (listen_offboard:=true) -->
-    <!-- Equivalent to:
-         ssh nvidia@192.168.1.1
-         source depend_ws/devel/setup.bash
-         roslaunch move_base move_base.launch listen_offboard:=true
-    -->
     <node machine="car"
           pkg="roslaunch"
           type="roslaunch"
@@ -29,12 +38,6 @@
           args="move_base move_base.launch listen_offboard:=true"
           output="screen" />
 
-    <!-- 2) Particle filter / AMCL on the car -->
-    <!-- Equivalent to:
-         ssh nvidia@192.168.1.1
-         source depend_ws/devel/setup.bash
-         roslaunch particle_filter slam.launch.py
-    -->
     <node machine="car"
           pkg="roslaunch"
           type="roslaunch"
@@ -42,12 +45,6 @@
           args="particle_filter slam.launch.py"
           output="screen" />
 
-    <!-- 3) Pure pursuit on the car -->
-    <!-- Equivalent to:
-         ssh nvidia@192.168.1.1
-         source depend_ws/devel/setup.bash
-         rosrun f1tenth_purepursuit pure_pursuit.py car_8 third_line
-    -->
     <node machine="car"
           pkg="f1tenth_purepursuit"
           type="pure_pursuit.py"
@@ -57,18 +54,5 @@
 
     <!-- ========= LOCAL MACHINE ========= -->
 
-    <!-- 4) Remote teleop launch (run locally) -->
-    <!-- Equivalent to:
-         source depend_ws/devel/setup.bash
-         roslaunch move_base remote_teleop.launch
-    -->
-    <include file="$(find move_base)/launch/remote_teleop.launch" />
-
-    <!-- 5) RViz with localization config (run locally) -->
-    <!-- localization_viz.rviz should live in the package used above in rviz_config -->
-    <node pkg="rviz"
-          type="rviz"
-          name="localization_rviz"
-          args="-d $(arg rviz_config)"
-          output="screen" />
+    
 </launch>
