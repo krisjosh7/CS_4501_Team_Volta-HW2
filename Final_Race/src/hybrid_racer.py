@@ -9,7 +9,7 @@ from visualization_msgs.msg import Marker
 import tf
 
 # --- CONFIGURATION ---
-LOOKAHEAD_DIST = 1.5
+LOOKAHEAD_DIST = 1.0
 BUBBLE_RADIUS = 0.5  # Size of the "safety bubble" around obstacles
 WALL_FOLLOW_BIAS = 0.0 # 0.0 = pure pursuit bias, 1.0 = pure gap bias
 

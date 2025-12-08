@@ -1,0 +1,250 @@
+#!/usr/bin/env python
+import rospy
+import math
+import numpy as np
+import csv
+import os
+import tf
+from sensor_msgs.msg import LaserScan
+from geometry_msgs.msg import PoseStamped, Point
+from std_msgs.msg import Float32MultiArray
+from visualization_msgs.msg import Marker, MarkerArray
+from nav_msgs.msg import Path
+
+# --- CONFIGURATION ---
+CAR_NAME = "car_8"
+RACELINE_FILE = "optimal_raceline.csv" # Assumes it's in the same folder structure as pure_pursuit
+LOOKAHEAD_DIST = 1.5 # Meters
+WHEELBASE_LEN = 0.325
+OBSTACLE_THRESHOLD = 1.0 # Meters (Distance to consider a point "blocked")
+LANE_OFFSET = 0.6 # Meters (Distance between parallel lanes)
+
+class DistFinder:
+    def __init__(self):
+        rospy.init_node('dist_finder')
+        
+        # Topics
+        self.scan_sub = rospy.Subscriber(f'/{CAR_NAME}/scan', LaserScan, self.scan_callback)
+        self.pose_sub = rospy.Subscriber(f'/{CAR_NAME}/particle_filter/viz/inferred_pose', PoseStamped, self.pose_callback)
+        
+        self.gap_pub = rospy.Publisher(f'/{CAR_NAME}/gap_info', Float32MultiArray, queue_size=1)
+        self.path_pub = rospy.Publisher(f'/{CAR_NAME}/selected_path', Path, queue_size=1)
+        self.marker_pub = rospy.Publisher(f'/{CAR_NAME}/debug_markers', MarkerArray, queue_size=1)
+
+        # State
+        self.x = 0.0
+        self.y = 0.0
+        self.heading = 0.0
+        self.current_speed = 0.0 # We might need odom for this if we want dynamic lookahead
+        
+        # Racelines
+        # List of (path, offset_value) tuples
+        # We generate multiple granular offsets to find a "valid" line that doesn't hit the wall
+        self.candidate_paths = [] 
+        
+        self.load_and_generate_racelines()
+        
+        self.listener = tf.TransformListener()
+
+    def load_and_generate_racelines(self):
+        # 1. Load Center Line
+        # Try to find the file in the standard location
+        file_path = os.path.expanduser(f'~/depend_ws/src/f1tenth_purepursuit/path/{RACELINE_FILE}')
+        if not os.path.exists(file_path):
+            rospy.logwarn(f"Raceline file not found at {file_path}. Trying local directory.")
+            file_path = RACELINE_FILE # Fallback
+            
+        try:
+            with open(file_path) as csv_file:
+                csv_reader = csv.reader(csv_file, delimiter=',')
+                for waypoint in csv_reader:
+                    self.center_line.append([float(waypoint[0]), float(waypoint[1]), float(waypoint[2])]) # x, y, v
+            rospy.loginfo(f"Loaded {len(self.center_line)} waypoints.")
+        except Exception as e:
+            rospy.logerr(f"Failed to load raceline: {e}")
+            return
+
+        self.center_line = np.array(self.center_line)
+        
+        # 2. Generate Candidate Lines
+        # Instead of just one Left/Right, we generate a spread of offsets.
+        # If the optimal line is near the wall, the large offsets will be invalid (hit wall),
+        # but the smaller offsets might still be valid.
+        
+        # Offsets in meters. 0.0 is the optimal line.
+        # We prioritize small deviations over large ones.
+        offsets = [0.0, 0.3, -0.3, 0.6, -0.6, 0.9, -0.9, 1.2, -1.2]
+        
+        for off in offsets:
+            if off == 0.0:
+                self.candidate_paths.append((self.center_line, 0.0))
+            else:
+                # Generate offset path
+                new_path = self.generate_offset(self.center_line, off)
+                self.candidate_paths.append((new_path, off))
+        
+        rospy.loginfo(f"Generated {len(self.candidate_paths)} candidate racelines.")
+        
+    def generate_offset(self, path, offset):
+        new_path = []
+        for i in range(len(path)):
+            # Get tangent vector
+            p1 = path[i]
+            p2 = path[(i+1) % len(path)]
+            
+            dx = p2[0] - p1[0]
+            dy = p2[1] - p1[1]
+            yaw = math.atan2(dy, dx)
+            
+            # Perpendicular vector (+90 degrees)
+            norm_yaw = yaw + math.pi/2
+            
+            nx = offset * math.cos(norm_yaw)
+            ny = offset * math.sin(norm_yaw)
+            
+            new_path.append([p1[0] + nx, p1[1] + ny, p1[2]]) # Keep same velocity
+            
+        return np.array(new_path)
+
+    def pose_callback(self, msg):
+        self.x = msg.pose.position.x
+        self.y = msg.pose.position.y
+        quaternion = (msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z, msg.pose.orientation.w)
+        self.heading = tf.transformations.euler_from_quaternion(quaternion)[2]
+
+    def scan_callback(self, data):
+        if len(self.candidate_paths) == 0:
+            return
+
+        # 1. Check Collisions & Select Best Line
+        # We iterate through candidates in order of priority (smallest offset first).
+        # The first one that is "valid" (no collisions) is chosen.
+        
+        selected_path = None
+        selected_offset = 0.0
+        
+        for path, offset in self.candidate_paths:
+            if self.check_path_validity(path, data):
+                selected_path = path
+                selected_offset = offset
+                # rospy.loginfo(f"Selected offset: {offset}m")
+                break
+        
+        # Fallback: If ALL are blocked, pick the center line (offset 0) and hope/brake.
+        if selected_path is None:
+            rospy.logwarn("ALL PATHS BLOCKED! Defaulting to Center.")
+            selected_path = self.candidate_paths[0][0] # The 0.0 offset path
+            selected_offset = 0.0
+
+        # 3. Calculate Pure Pursuit Steering
+        steering_angle, target_v = self.get_pure_pursuit_command(selected_path)
+        
+        # 4. Publish Gap Info (Steering Angle + Distance/Speed)
+        # Using the gap_info format: [steering_angle_rad, target_velocity]
+        msg = Float32MultiArray()
+        msg.data = [steering_angle, target_v]
+        self.gap_pub.publish(msg)
+        
+        # 5. Visualize
+        self.publish_path_viz(selected_path)
+
+    def check_path_validity(self, path, scan_data):
+        # Find the closest point on the path to the car
+        # Then check the next N meters of the path against the LiDAR
+        
+        # 1. Find closest index
+        dists = np.linalg.norm(path[:, :2] - np.array([self.x, self.y]), axis=1)
+        closest_idx = np.argmin(dists)
+        
+        # 2. Check points ahead
+        check_dist = 3.0 # Check 3 meters ahead
+        dist_checked = 0.0
+        curr_idx = closest_idx
+        
+        while dist_checked < check_dist:
+            # Get point in global frame
+            pt_global = path[curr_idx]
+            
+            # Transform to car frame
+            dx = pt_global[0] - self.x
+            dy = pt_global[1] - self.y
+            
+            x_local = dx * math.cos(-self.heading) - dy * math.sin(-self.heading)
+            y_local = dx * math.sin(-self.heading) + dy * math.cos(-self.heading)
+            
+            # If point is behind us, ignore
+            if x_local < 0:
+                curr_idx = (curr_idx + 1) % len(path)
+                continue
+                
+            # Convert to polar (r, theta) to match LiDAR
+            r = math.sqrt(x_local**2 + y_local**2)
+            theta = math.atan2(y_local, x_local)
+            
+            # Find corresponding LiDAR index
+            if scan_data.angle_min <= theta <= scan_data.angle_max:
+                idx = int((theta - scan_data.angle_min) / scan_data.angle_increment)
+                if 0 <= idx < len(scan_data.ranges):
+                    lidar_dist = scan_data.ranges[idx]
+                    
+                    # If LiDAR sees something closer than the path point (minus safety margin)
+                    # It means the path is blocked
+                    if lidar_dist < (r + 0.3): # 0.3m buffer
+                        return False
+            
+            # Move to next point
+            dist_checked += np.linalg.norm(path[(curr_idx+1)%len(path), :2] - path[curr_idx, :2])
+            curr_idx = (curr_idx + 1) % len(path)
+            
+        return True
+
+    def get_pure_pursuit_command(self, path):
+        # 1. Find closest point
+        dists = np.linalg.norm(path[:, :2] - np.array([self.x, self.y]), axis=1)
+        closest_idx = np.argmin(dists)
+        
+        # 2. Find lookahead point
+        target_idx = closest_idx
+        for i in range(closest_idx, len(path) + closest_idx): # Handle wrap-around
+            idx = i % len(path)
+            dist = np.linalg.norm(path[idx, :2] - np.array([self.x, self.y]))
+            if dist > LOOKAHEAD_DIST:
+                target_idx = idx
+                break
+        
+        target_pt = path[target_idx]
+        
+        # 3. Calculate Steering
+        dx = target_pt[0] - self.x
+        dy = target_pt[1] - self.y
+        
+        x_rel = dx * math.cos(self.heading) + dy * math.sin(self.heading)
+        y_rel = -dx * math.sin(self.heading) + dy * math.cos(self.heading)
+        
+        alpha = math.atan2(y_rel, x_rel)
+        actual_lookahead = math.sqrt(dx**2 + dy**2)
+        
+        steering_angle = math.atan2(2.0 * WHEELBASE_LEN * math.sin(alpha), actual_lookahead)
+        
+        return steering_angle, target_pt[2] # Return angle and target velocity
+
+    def publish_path_viz(self, path):
+        msg = Path()
+        msg.header.frame_id = "map"
+        msg.header.stamp = rospy.Time.now()
+        
+        for pt in path:
+            pose = PoseStamped()
+            pose.pose.position.x = pt[0]
+            pose.pose.position.y = pt[1]
+            pose.pose.orientation.w = 1.0
+            msg.poses.append(pose)
+            
+        self.path_pub.publish(msg)
+
+if __name__ == '__main__':
+    try:
+        DistFinder()
+        rospy.spin()
+    except rospy.ROSInterruptException:
+        pass
