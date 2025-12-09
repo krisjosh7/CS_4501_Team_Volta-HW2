@@ -204,7 +204,7 @@ class DistFinder:
         
         # 5. Visualize
         self.publish_path_viz(selected_path)
-        self.publish_all_paths(data, selected_path)
+        self.publish_all_paths(data, selected_path, ranges)
 
     def check_path_validity(self, path, scan_data, ranges):
         # Find the closest point on the path to the car
@@ -301,7 +301,7 @@ class DistFinder:
             
         self.path_pub.publish(msg)
 
-    def publish_all_paths(self, scan_data, selected_path):
+    def publish_all_paths(self, scan_data, selected_path, ranges):
         marker_array = MarkerArray()
 
         for i, (path, offset) in enumerate(self.candidate_paths):
