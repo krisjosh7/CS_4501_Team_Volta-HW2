@@ -30,6 +30,7 @@ class DistFinder:
         self.gap_pub = rospy.Publisher('/car_8/gap_info', Float32MultiArray, queue_size=1)
         self.path_pub = rospy.Publisher('/car_8/selected_path', Path, queue_size=1)
         self.marker_pub = rospy.Publisher('/car_8/debug_markers', MarkerArray, queue_size=1)
+        self.closest_pub = rospy.Publisher('/car_8/closest_marker', Marker, queue_size=1)
 
         # State
         self.x = 0.0
@@ -153,13 +154,58 @@ class DistFinder:
         selected_path = None
         selected_offset = 0.0
 
-        self.closest_obstacle(data)  # For debugging/logging
+        min_dist, angle_of_closest = self.closest_obstacle(data)  # For debugging/logging
+
+        # 3. Determine direction
+        if angle_of_closest > 20 and min_dist <= 0.5:
+            # Obstacle is on the LEFT
+            print("LEFT| angle: " + str(angle_of_closest) + " dist: " + str(min_dist))
+            selected_path = selected_path = self.candidate_paths[2][0] 
+        elif angle_of_closest < -20 and min_dist <= 0.5:
+            # Obstacle is on the RIGHT
+            print("RIGHT| angle: " + str(angle_of_closest) + " dist: " + str(min_dist))
+            selected_path = self.candidate_paths[0][0] 
+        else:
+            # Obstacle is dead CENTER (exactly 90)
+            print("Ahead| angle: " + str(angle_of_closest) + " dist: " + str(min_dist))
+
+        print("---------------------")
         
         # Fallback: If ALL are blocked, pick the center line (offset 0) and hope/brake.
         if selected_path is None:
-            rospy.logwarn("ALL PATHS BLOCKED! Defaulting to Center.")
+            #rospy.logwarn("ALL PATHS BLOCKED! Defaulting to Center.")
             selected_path = self.candidate_paths[1][0] # The 0.0 offset path
             selected_offset = 0.0
+        
+        p_x = min_dist * math.cos(angle_of_closest)
+        p_y = min_dist * math.sin(angle_of_closest)
+
+        marker = Marker()
+        marker.header = data.header
+        marker.ns = "closest_obstacle"
+        marker.id = 0
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+
+        marker.pose.position.x = p_x
+        marker.pose.position.y = p_y
+        marker.pose.position.z = 0.0
+
+        marker.pose.orientation.x = 0.0
+        marker.pose.orientation.y = 0.0
+        marker.pose.orientation.z = 0.0
+        marker.pose.orientation.w = 1.0
+
+        marker.scale.x = 0.2
+        marker.scale.y = 0.2
+        marker.scale.z = 0.2
+
+        marker.color.r = 0.0
+        marker.color.a = 1.0
+        marker.color.b = 1.0
+        marker.color.g = 0.0
+        
+        self.closest_pub.publish(marker)
 
         # 3. Calculate Pure Pursuit Steering
         steering_angle = self.get_pure_pursuit_command(selected_path)
@@ -238,20 +284,9 @@ class DistFinder:
 
             # 2. Add the 90-degree offset to match your system 
             # (Standard ROS: 0 is Front. Your System: 0 is Right, 90 is Front)
-            adjusted_angle = angle_deg + 90
+            adjusted_angle = angle_deg
 
-            print(adjusted_angle)
-
-            # 3. Determine direction
-            if adjusted_angle > 90:
-                # Obstacle is on the LEFT
-                print("Obstacle detected on LEFT ")
-            elif adjusted_angle < 90:
-                # Obstacle is on the RIGHT
-                print("Obstacle detected on RIGHT")
-            else:
-                # Obstacle is dead CENTER (exactly 90)
-                print("Obstacle detected directly AHEAD")
+        return min_dist, adjusted_angle
 
     def get_pure_pursuit_command(self, path):
         # 1. Find closest point
