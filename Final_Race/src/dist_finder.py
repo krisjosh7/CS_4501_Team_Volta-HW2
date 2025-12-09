@@ -114,9 +114,37 @@ class DistFinder:
         quaternion = (msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z, msg.pose.orientation.w)
         self.heading = tf.transformations.euler_from_quaternion(quaternion)[2]
 
+    def preprocess_lidar(self, ranges):
+        # Clean up the LiDAR data
+        # 1. Convert tuple to list/numpy array
+        proc_ranges = np.array(ranges)
+        
+        # 2. Handle Inf/NaN
+        # In many sims, 'inf' means "too far". We set it to max range.
+        proc_ranges[np.isinf(proc_ranges)] = 5.0
+        proc_ranges[np.isnan(proc_ranges)] = 5.0
+        
+        # 3. Handle 0.0 (Often means "too close" or "error", but in some sims means "max range")
+        # If track is empty and we see 0.0, it's likely noise/max range.
+        # SAFE default: treat as max range unless we are sure it's an obstacle.
+        # But if it really IS an obstacle touching the sensor, this is dangerous.
+        # Compromise: Set to small non-zero or max?
+        # Given "empty track" user report, 0.0 is likely "max range" error.
+        proc_ranges[proc_ranges == 0.0] = 5.0
+        
+        return proc_ranges
+
     def scan_callback(self, data):
         if len(self.candidate_paths) == 0:
             return
+
+        # Preprocess ranges
+        ranges = self.preprocess_lidar(data.ranges)
+        
+        # Create a dummy data object to pass cleaned ranges to check functions
+        # (Or update valid check to take ranges directly)
+        
+        # ... logic continues ...
 
         # 1. Check Collisions & Select Best Line
         # We iterate through candidates in order of priority (smallest offset first).
@@ -143,16 +171,16 @@ class DistFinder:
         path_0 = get_path_by_offset(0.0)
         path_last = get_path_by_offset(self.last_selected_offset)
         
-        if path_0 is not None and self.check_path_validity(path_0, data):
+        if path_0 is not None and self.check_path_validity(path_0, data, ranges):
              selected_path = path_0
              selected_offset = 0.0
-        elif path_last is not None and self.check_path_validity(path_last, data):
+        elif path_last is not None and self.check_path_validity(path_last, data, ranges):
              selected_path = path_last
              selected_offset = self.last_selected_offset
         else:
             # Fallback to standard priority search
             for path, offset in self.candidate_paths:
-                if self.check_path_validity(path, data):
+                if self.check_path_validity(path, data, ranges):
                     selected_path = path
                     selected_offset = offset
                     break
@@ -178,7 +206,7 @@ class DistFinder:
         self.publish_path_viz(selected_path)
         self.publish_all_paths(data, selected_path)
 
-    def check_path_validity(self, path, scan_data):
+    def check_path_validity(self, path, scan_data, ranges):
         # Find the closest point on the path to the car
         # Then check the next N meters of the path against the LiDAR
         
@@ -214,12 +242,13 @@ class DistFinder:
             # Find corresponding LiDAR index
             if scan_data.angle_min <= theta <= scan_data.angle_max:
                 idx = int((theta - scan_data.angle_min) / scan_data.angle_increment)
-                if 0 <= idx < len(scan_data.ranges):
-                    lidar_dist = scan_data.ranges[idx]
+                if 0 <= idx < len(ranges):
+                    lidar_dist = ranges[idx]
                     
                     # If LiDAR sees something closer than the path point (minus safety margin)
                     # It means the path is blocked
                     if lidar_dist < (r + 0.3): # 0.3m buffer
+                        # rospy.logwarn(f"Blocked at dist {lidar_dist:.2f} vs Path {r:.2f} (idx {idx})")
                         return False
             
             # Move to next point
@@ -286,7 +315,7 @@ class DistFinder:
             marker.pose.orientation.w = 1.0
             marker.scale.x = 0.05 #time width
 
-            is_valid = self.check_path_validity(path, scan_data)
+            is_valid = self.check_path_validity(path, scan_data, ranges)
 
             if np.array_equal(path, selected_path):
                 marker.color.r = 0.0
