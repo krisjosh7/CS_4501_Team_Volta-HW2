@@ -8,6 +8,7 @@ import tf
 from ackermann_msgs.msg import AckermannDrive
 from geometry_msgs.msg import PolygonStamped, Point32, PoseStamped
 from nav_msgs.msg import Path, Odometry
+from std_msgs.msg import Bool
 
 # --- TUNING PARAMETERS ---
 LOOKAHEAD_MIN = 0.5   # Minimum lookahead (meters) for low speeds
@@ -32,6 +33,7 @@ except IndexError:
 current_velocity = 0.0
 wp_seq = 0
 control_polygon = PolygonStamped()
+safety_override = False # New flag to track if we should yield control
 
 # WAYPOINT TRACKING STATE (The Fix)
 last_closest_index = 0 
@@ -40,6 +42,14 @@ last_closest_index = 0
 command_pub = rospy.Publisher('/{}/offboard/command'.format(car_name), AckermannDrive, queue_size=1)
 polygon_pub = rospy.Publisher('/{}/purepursuit_control/visualize'.format(car_name), PolygonStamped, queue_size=1)
 path_pub    = rospy.Publisher('/{}/purepursuit_control/path'.format(car_name), Path, queue_size=1, latch=True)
+
+def override_callback(msg):
+    """
+    Updates the safety override status.
+    If msg.data is True, dist_finder is in control, and we should stop publishing.
+    """
+    global safety_override
+    safety_override = msg.data
 
 def construct_path():
     """ 
@@ -89,7 +99,13 @@ def odom_callback(data):
 def purepursuit_control_node(data):
     global wp_seq
     global current_velocity
-    global last_closest_index # Access the tracking variable
+    global last_closest_index 
+    global safety_override
+
+    # --- SAFETY CHECK ---
+    # If dist_finder has taken over, do not calculate or publish anything.
+    if safety_override:
+        return
     
     if not plan:
         return
@@ -114,12 +130,11 @@ def purepursuit_control_node(data):
     closest_index = last_closest_index
     
     # Search Window: Look 10 points behind and 50 points ahead of previous location.
-    # This prevents jumping to the wrong part of the track.
     search_start = last_closest_index - 10
     search_end = last_closest_index + 50
     
     for i in range(search_start, search_end):
-        idx = i % len(plan) # Handle wrap-around (Start/Finish line)
+        idx = i % len(plan) # Handle wrap-around
         
         dx = odom_x - plan[idx][0]
         dy = odom_y - plan[idx][1]
@@ -130,8 +145,7 @@ def purepursuit_control_node(data):
             closest_index = idx
 
     # SAFETY CHECK: If we are "lost" (closest point is too far), do a global search
-    # This handles manual resets in simulation or startup.
-    if min_dist_sq > 10.0: # If closest point is > 3.16m away
+    if min_dist_sq > 10.0: 
         rospy.logwarn("Waypoint lost! Performing global search reset.")
         min_dist_sq = float('inf')
         for i in range(len(plan)):
@@ -153,7 +167,6 @@ def purepursuit_control_node(data):
     lookahead_distance = max(LOOKAHEAD_MIN, min(lookahead_distance, LOOKAHEAD_MAX))
 
     # --- STEP 4: FIND GOAL POINT ---
-    # Start searching forward from the closest index
     target_index = closest_index
     found_target = False
     
@@ -165,16 +178,14 @@ def purepursuit_control_node(data):
             found_target = True
             break
             
-    # If we didn't find a point far enough (e.g. end of track without loop), take the last one
     if not found_target:
-        target_index = (closest_index + 5) % len(plan) # Just look a bit ahead
+        target_index = (closest_index + 5) % len(plan)
     
     target_x = plan[target_index][0]
     target_y = plan[target_index][1]
     target_v = plan[target_index][2]
 
     # --- STEP 5: CALCULATE STEERING ---
-    # Transform target to vehicle frame
     dx = target_x - odom_x
     dy = target_y - odom_y
     
@@ -192,15 +203,11 @@ def purepursuit_control_node(data):
     command.steering_angle = (steering_angle_rad / MAX_STEERING_ANGLE) * STEERING_RANGE
 
     # Assign Velocity
-
-    max_speed = 30.0  # m/s, tune this
-    min_speed = 10.0  # m/s, tune this
+    max_speed = 30.0  
+    min_speed = 10.0  
     
-    # Linearly scale speed based on the magnitude of the steering angle
     abs_steering = abs(command.steering_angle)
     command.speed = max_speed - (abs_steering / STEERING_RANGE) * (max_speed - min_speed)
-
-    # command.speed = target_v
 
     command_pub.publish(command)
 
@@ -236,6 +243,9 @@ if __name__ == '__main__':
         
         # Subscriber for Velocity (Odometry)
         rospy.Subscriber('/{}/odom'.format(car_name), Odometry, odom_callback)
+
+        # Subscriber for Safety Override (Conflict Resolution)
+        rospy.Subscriber('/{}/safety_override'.format(car_name), Bool, override_callback)
         
         rospy.spin()
 

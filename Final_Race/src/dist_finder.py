@@ -7,17 +7,18 @@ import os
 import tf
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseStamped, Point
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, Bool
 from visualization_msgs.msg import Marker, MarkerArray
 from nav_msgs.msg import Path
+from ackermann_msgs.msg import AckermannDrive
 
 # --- CONFIGURATION ---
 CAR_NAME = "car_8"
-RACELINE_FILE = "base_map_2_raceline.csv" # Assumes it"s in the same folder structure as pure_pursuit
+RACELINE_FILE = "base_map_2_raceline.csv" 
 LOOKAHEAD_DIST = 1.5 # Meters
 WHEELBASE_LEN = 0.325
-OBSTACLE_THRESHOLD = 1.0 # Meters (Distance to consider a point "blocked")
-LANE_OFFSET = 0.6 # Meters (Distance between parallel lanes)
+OBSTACLE_THRESHOLD = 1.0 
+LANE_OFFSET = 0.6 
 
 class DistFinder:
     def __init__(self):
@@ -31,15 +32,17 @@ class DistFinder:
         self.path_pub = rospy.Publisher('/car_8/selected_path', Path, queue_size=1)
         self.marker_pub = rospy.Publisher('/car_8/debug_markers', MarkerArray, queue_size=1)
 
+        # --- NEW PUBLISHERS FOR CONTROL TAKEOVER ---
+        self.drive_pub = rospy.Publisher('/car_8/offboard/command', AckermannDrive, queue_size=1)
+        self.override_pub = rospy.Publisher('/car_8/safety_override', Bool, queue_size=1)
+
         # State
         self.x = 0.0
         self.y = 0.0
         self.heading = 0.0
-        self.current_speed = 0.0 # We might need odom for this if we want dynamic lookahead
         self.center_line = []
-        # Racelines
-        # List of (path, offset_value) tuples
-        # We generate multiple granular offsets to find a "valid" line that doesn"t hit the wall
+        
+        # Racelines: List of (path, offset_value) tuples
         self.candidate_paths = [] 
         
         self.load_and_generate_racelines()
@@ -48,11 +51,10 @@ class DistFinder:
 
     def load_and_generate_racelines(self):
         # 1. Load Center Line
-        # Try to find the file in the standard location
         file_path = os.path.expanduser("~/depend_ws/src/f1tenth_purepursuit/path/base_map_2_raceline.csv")
         if not os.path.exists(file_path):
             rospy.logwarn("Raceline file not found. Trying local directory.")
-            file_path = RACELINE_FILE # Fallback
+            file_path = RACELINE_FILE 
             
         try:
             with open(file_path) as csv_file:
@@ -62,25 +64,19 @@ class DistFinder:
             rospy.loginfo("Loaded waypoints.")
         except Exception as e:
             rospy.logerr(e) 
-            rospy.logerr("Failed to load raceline: e")
+            rospy.logerr("Failed to load raceline")
             return
 
         self.center_line = np.array(self.center_line)
         
         # 2. Generate Candidate Lines
-        # Instead of just one Left/Right, we generate a spread of offsets.
-        # If the optimal line is near the wall, the large offsets will be invalid (hit wall),
-        # but the smaller offsets might still be valid.
-        
         # Offsets in meters. 0.0 is the optimal line.
-        # We prioritize small deviations over large ones.
-        offsets = [0.0, 0.3, -0.3]
+        offsets = [0.0, 0.4, -0.4, 0.8, -0.8] # Added more options for wider avoidance
         
         for off in offsets:
             if off == 0.0:
                 self.candidate_paths.append((self.center_line, 0.0))
             else:
-                # Generate offset path
                 new_path = self.generate_offset(self.center_line, off)
                 self.candidate_paths.append((new_path, off))
         
@@ -89,7 +85,6 @@ class DistFinder:
     def generate_offset(self, path, offset):
         new_path = []
         for i in range(len(path)):
-            # Get tangent vector
             p1 = path[i]
             p2 = path[(i+1) % len(path)]
             
@@ -97,13 +92,11 @@ class DistFinder:
             dy = p2[1] - p1[1]
             yaw = math.atan2(dy, dx)
             
-            # Perpendicular vector (+90 degrees)
             norm_yaw = yaw + math.pi/2
-            
             nx = offset * math.cos(norm_yaw)
             ny = offset * math.sin(norm_yaw)
             
-            new_path.append([p1[0] + nx, p1[1] + ny]) # Keep same velocity
+            new_path.append([p1[0] + nx, p1[1] + ny]) 
             
         return np.array(new_path)
 
@@ -118,9 +111,6 @@ class DistFinder:
             return
 
         # 1. Check Collisions & Select Best Line
-        # We iterate through candidates in order of priority (smallest offset first).
-        # The first one that is "valid" (no collisions) is chosen.
-        
         selected_path = None
         selected_offset = 0.0
         
@@ -128,73 +118,83 @@ class DistFinder:
             if self.check_path_validity(path, data):
                 selected_path = path
                 selected_offset = offset
-                # rospy.loginfo(f"Selected offset: {offset}m")
                 break
         
-        # Fallback: If ALL are blocked, pick the center line (offset 0) and hope/brake.
+        # Fallback: If ALL are blocked, pick center
         if selected_path is None:
             rospy.logwarn("ALL PATHS BLOCKED! Defaulting to Center.")
-            selected_path = self.candidate_paths[0][0] # The 0.0 offset path
+            selected_path = self.candidate_paths[0][0] 
             selected_offset = 0.0
 
-        # 3. Calculate Pure Pursuit Steering
-        steering_angle = self.get_pure_pursuit_command(selected_path)
+        # --- CONTROL LOGIC SWITCH ---
+        override_msg = Bool()
         
-        # 4. Publish Gap Info (Steering Angle + Distance/Speed)
-        # Using the gap_info format: [steering_angle_rad, target_velocity]
-        msg = Float32MultiArray()
-        msg.data = [steering_angle]
-        self.gap_pub.publish(msg)
-        
+        if selected_offset == 0.0:
+            # OPTIMAL LINE IS CLEAR
+            # We let pure_pursuit.py handle the driving.
+            override_msg.data = False
+            self.override_pub.publish(override_msg)
+            
+        else:
+            # OBSTACLE DETECTED -> TAKEOVER CONTROL
+            # We must drive the car because the optimal line is blocked.
+            override_msg.data = True
+            self.override_pub.publish(override_msg)
+            
+            # Calculate Steering
+            steering_angle = self.get_pure_pursuit_command(selected_path)
+            
+            # Calculate Speed (Slow down for avoidance)
+            # If steering is sharp (> 0.2 rad), slow down to 2.0 m/s, else 4.0 m/s
+            speed = 4.0
+            if abs(steering_angle) > 0.2:
+                speed = 2.5
+            
+            # Publish Drive Command
+            drive_msg = AckermannDrive()
+            drive_msg.steering_angle = steering_angle
+            drive_msg.speed = speed
+            self.drive_pub.publish(drive_msg)
+
         # 5. Visualize
         self.publish_path_viz(selected_path)
         self.publish_all_paths(data, selected_path)
 
     def check_path_validity(self, path, scan_data):
-        # Find the closest point on the path to the car
-        # Then check the next N meters of the path against the LiDAR
-        
         # 1. Find closest index
         dists = np.linalg.norm(path[:, :2] - np.array([self.x, self.y]), axis=1)
         closest_idx = np.argmin(dists)
         
         # 2. Check points ahead
-        check_dist = 1.0 # Check 3 meters ahead
+        check_dist = 1.5 # Increased check distance slightly
         dist_checked = 0.0
         curr_idx = closest_idx
         
         while dist_checked < check_dist:
-            # Get point in global frame
             pt_global = path[curr_idx]
             
-            # Transform to car frame
             dx = pt_global[0] - self.x
             dy = pt_global[1] - self.y
             
             x_local = dx * math.cos(-self.heading) - dy * math.sin(-self.heading)
             y_local = dx * math.sin(-self.heading) + dy * math.cos(-self.heading)
             
-            # If point is behind us, ignore
             if x_local < 0:
                 curr_idx = (curr_idx + 1) % len(path)
                 continue
                 
-            # Convert to polar (r, theta) to match LiDAR
             r = math.sqrt(x_local**2 + y_local**2)
             theta = math.atan2(y_local, x_local)
             
-            # Find corresponding LiDAR index
             if scan_data.angle_min <= theta <= scan_data.angle_max:
                 idx = int((theta - scan_data.angle_min) / scan_data.angle_increment)
                 if 0 <= idx < len(scan_data.ranges):
                     lidar_dist = scan_data.ranges[idx]
                     
-                    # If LiDAR sees something closer than the path point (minus safety margin)
-                    # It means the path is blocked
-                    if lidar_dist < (r + 0.3): # 0.3m buffer
+                    # Buffer check
+                    if lidar_dist < (r + 0.35): # Slightly larger buffer
                         return False
             
-            # Move to next point
             dist_checked += np.linalg.norm(path[(curr_idx+1)%len(path), :2] - path[curr_idx, :2])
             curr_idx = (curr_idx + 1) % len(path)
             
@@ -207,7 +207,7 @@ class DistFinder:
         
         # 2. Find lookahead point
         target_idx = closest_idx
-        for i in range(closest_idx, len(path) + closest_idx): # Handle wrap-around
+        for i in range(closest_idx, len(path) + closest_idx): 
             idx = i % len(path)
             dist = np.linalg.norm(path[idx, :2] - np.array([self.x, self.y]))
             if dist > LOOKAHEAD_DIST:
@@ -228,7 +228,7 @@ class DistFinder:
         
         steering_angle = math.atan2(2.0 * WHEELBASE_LEN * math.sin(alpha), actual_lookahead)
         
-        return steering_angle # Return angle and target velocity
+        return steering_angle 
 
     def publish_path_viz(self, path):
         msg = Path()
@@ -256,7 +256,7 @@ class DistFinder:
             marker.type = Marker.LINE_STRIP
             marker.action = Marker.ADD
             marker.pose.orientation.w = 1.0
-            marker.scale.x = 0.05 #time width
+            marker.scale.x = 0.05 
 
             is_valid = self.check_path_validity(path, scan_data)
 
