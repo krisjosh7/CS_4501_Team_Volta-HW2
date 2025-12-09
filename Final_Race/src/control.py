@@ -13,15 +13,15 @@ class Control:
     def __init__(self):
         rospy.init_node('control_node')
         
-        self.drive_pub = rospy.Publisher(f'/{CAR_NAME}/offboard/command', AckermannDrive, queue_size=1)
-        self.gap_sub = rospy.Subscriber(f'/{CAR_NAME}/gap_info', Float32MultiArray, self.gap_callback)
+        self.drive_pub = rospy.Publisher('/car_8/offboard/command', AckermannDrive, queue_size=1)
+        self.gap_sub = rospy.Subscriber('/car_8/gap_info', Float32MultiArray, self.gap_callback)
         
         rospy.loginfo("Control node initialized.")
 
     def gap_callback(self, msg):
         # msg.data = [steering_angle_rad, target_velocity]
         steering_angle_rad = msg.data[0]
-        target_v = msg.data[1]
+        target_v = 30 #CHANGE LATER
         
         # 1. Convert Radians to Servo Command [-100, 100]
         # Clamp to physical limits first

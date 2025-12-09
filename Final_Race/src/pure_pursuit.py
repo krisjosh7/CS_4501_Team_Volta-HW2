@@ -192,7 +192,15 @@ def purepursuit_control_node(data):
     command.steering_angle = (steering_angle_rad / MAX_STEERING_ANGLE) * STEERING_RANGE
 
     # Assign Velocity
-    command.speed = target_v
+
+    max_speed = 30.0  # m/s, tune this
+    min_speed = 10.0  # m/s, tune this
+    
+    # Linearly scale speed based on the magnitude of the steering angle
+    abs_steering = abs(command.steering_angle)
+    command.speed = max_speed - (abs_steering / STEERING_RANGE) * (max_speed - min_speed)
+
+    # command.speed = target_v
 
     command_pub.publish(command)
 

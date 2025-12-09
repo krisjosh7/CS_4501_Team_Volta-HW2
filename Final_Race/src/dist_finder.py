@@ -13,7 +13,7 @@ from nav_msgs.msg import Path
 
 # --- CONFIGURATION ---
 CAR_NAME = "car_8"
-RACELINE_FILE = "optimal_raceline.csv" # Assumes it's in the same folder structure as pure_pursuit
+RACELINE_FILE = "base_map_2_raceline.csv" # Assumes it"s in the same folder structure as pure_pursuit
 LOOKAHEAD_DIST = 1.5 # Meters
 WHEELBASE_LEN = 0.325
 OBSTACLE_THRESHOLD = 1.0 # Meters (Distance to consider a point "blocked")
@@ -21,25 +21,25 @@ LANE_OFFSET = 0.6 # Meters (Distance between parallel lanes)
 
 class DistFinder:
     def __init__(self):
-        rospy.init_node('dist_finder')
+        rospy.init_node("dist_finder")
         
         # Topics
-        self.scan_sub = rospy.Subscriber(f'/{CAR_NAME}/scan', LaserScan, self.scan_callback)
-        self.pose_sub = rospy.Subscriber(f'/{CAR_NAME}/particle_filter/viz/inferred_pose', PoseStamped, self.pose_callback)
+        self.scan_sub = rospy.Subscriber('/car_8/scan', LaserScan, self.scan_callback)
+        self.pose_sub = rospy.Subscriber('/car_8/particle_filter/viz/inferred_pose', PoseStamped, self.pose_callback)
         
-        self.gap_pub = rospy.Publisher(f'/{CAR_NAME}/gap_info', Float32MultiArray, queue_size=1)
-        self.path_pub = rospy.Publisher(f'/{CAR_NAME}/selected_path', Path, queue_size=1)
-        self.marker_pub = rospy.Publisher(f'/{CAR_NAME}/debug_markers', MarkerArray, queue_size=1)
+        self.gap_pub = rospy.Publisher('/car_8/gap_info', Float32MultiArray, queue_size=1)
+        self.path_pub = rospy.Publisher('/car_8/selected_path', Path, queue_size=1)
+        self.marker_pub = rospy.Publisher('/car_8/debug_markers', MarkerArray, queue_size=1)
 
         # State
         self.x = 0.0
         self.y = 0.0
         self.heading = 0.0
         self.current_speed = 0.0 # We might need odom for this if we want dynamic lookahead
-        
+        self.center_line = []
         # Racelines
         # List of (path, offset_value) tuples
-        # We generate multiple granular offsets to find a "valid" line that doesn't hit the wall
+        # We generate multiple granular offsets to find a "valid" line that doesn"t hit the wall
         self.candidate_paths = [] 
         
         self.load_and_generate_racelines()
@@ -49,19 +49,20 @@ class DistFinder:
     def load_and_generate_racelines(self):
         # 1. Load Center Line
         # Try to find the file in the standard location
-        file_path = os.path.expanduser(f'~/depend_ws/src/f1tenth_purepursuit/path/{RACELINE_FILE}')
+        file_path = os.path.expanduser("~/depend_ws/src/f1tenth_purepursuit/path/base_map_2_raceline.csv")
         if not os.path.exists(file_path):
-            rospy.logwarn(f"Raceline file not found at {file_path}. Trying local directory.")
+            rospy.logwarn("Raceline file not found. Trying local directory.")
             file_path = RACELINE_FILE # Fallback
             
         try:
             with open(file_path) as csv_file:
-                csv_reader = csv.reader(csv_file, delimiter=',')
+                csv_reader = csv.reader(csv_file, delimiter=",")
                 for waypoint in csv_reader:
-                    self.center_line.append([float(waypoint[0]), float(waypoint[1]), float(waypoint[2])]) # x, y, v
-            rospy.loginfo(f"Loaded {len(self.center_line)} waypoints.")
+                    self.center_line.append([float(waypoint[0]), float(waypoint[1])]) # x, y
+            rospy.loginfo("Loaded waypoints.")
         except Exception as e:
-            rospy.logerr(f"Failed to load raceline: {e}")
+            rospy.logerr(e) 
+            rospy.logerr("Failed to load raceline: e")
             return
 
         self.center_line = np.array(self.center_line)
@@ -73,7 +74,7 @@ class DistFinder:
         
         # Offsets in meters. 0.0 is the optimal line.
         # We prioritize small deviations over large ones.
-        offsets = [0.0, 0.3, -0.3, 0.6, -0.6, 0.9, -0.9, 1.2, -1.2]
+        offsets = [0.0, 0.3, -0.3]
         
         for off in offsets:
             if off == 0.0:
@@ -83,7 +84,7 @@ class DistFinder:
                 new_path = self.generate_offset(self.center_line, off)
                 self.candidate_paths.append((new_path, off))
         
-        rospy.loginfo(f"Generated {len(self.candidate_paths)} candidate racelines.")
+        rospy.loginfo("Generated candidate racelines.")
         
     def generate_offset(self, path, offset):
         new_path = []
@@ -102,7 +103,7 @@ class DistFinder:
             nx = offset * math.cos(norm_yaw)
             ny = offset * math.sin(norm_yaw)
             
-            new_path.append([p1[0] + nx, p1[1] + ny, p1[2]]) # Keep same velocity
+            new_path.append([p1[0] + nx, p1[1] + ny]) # Keep same velocity
             
         return np.array(new_path)
 
@@ -137,16 +138,17 @@ class DistFinder:
             selected_offset = 0.0
 
         # 3. Calculate Pure Pursuit Steering
-        steering_angle, target_v = self.get_pure_pursuit_command(selected_path)
+        steering_angle = self.get_pure_pursuit_command(selected_path)
         
         # 4. Publish Gap Info (Steering Angle + Distance/Speed)
         # Using the gap_info format: [steering_angle_rad, target_velocity]
         msg = Float32MultiArray()
-        msg.data = [steering_angle, target_v]
+        msg.data = [steering_angle]
         self.gap_pub.publish(msg)
         
         # 5. Visualize
         self.publish_path_viz(selected_path)
+        self.publish_all_paths(data, selected_path)
 
     def check_path_validity(self, path, scan_data):
         # Find the closest point on the path to the car
@@ -157,7 +159,7 @@ class DistFinder:
         closest_idx = np.argmin(dists)
         
         # 2. Check points ahead
-        check_dist = 3.0 # Check 3 meters ahead
+        check_dist = 1.0 # Check 3 meters ahead
         dist_checked = 0.0
         curr_idx = closest_idx
         
@@ -226,7 +228,7 @@ class DistFinder:
         
         steering_angle = math.atan2(2.0 * WHEELBASE_LEN * math.sin(alpha), actual_lookahead)
         
-        return steering_angle, target_pt[2] # Return angle and target velocity
+        return steering_angle # Return angle and target velocity
 
     def publish_path_viz(self, path):
         msg = Path()
@@ -242,7 +244,57 @@ class DistFinder:
             
         self.path_pub.publish(msg)
 
-if __name__ == '__main__':
+    def publish_all_paths(self, scan_data, selected_path):
+        marker_array = MarkerArray()
+
+        for i, (path, offset) in enumerate(self.candidate_paths):
+            marker = Marker()
+            marker.header.frame_id = "map"
+            marker.header.stamp = rospy.Time.now()
+            marker.ns = "candidate_paths"
+            marker.id = i
+            marker.type = Marker.LINE_STRIP
+            marker.action = Marker.ADD
+            marker.pose.orientation.w = 1.0
+            marker.scale.x = 0.05 #time width
+
+            is_valid = self.check_path_validity(path, scan_data)
+
+            if np.array_equal(path, selected_path):
+                marker.color.r = 0.0
+                marker.color.g = 1.0
+                marker.color.b = 0.0
+                marker.color.a = 1.0
+                marker.scale.x = 0.1
+            
+            elif is_valid:
+                marker.color.r = 0.0
+                marker.color.g = 0.0
+                marker.color.b = 1.0
+                marker.color.a = 0.5
+            else:
+                marker.color.r = 1.0
+                marker.color.g = 0.0
+                marker.color.b = 0.0
+                marker.color.a = 0.5
+
+            dists = np.linalg.norm(path[:, :2] - np.array([self.x, self.y]), axis=1)
+            closest_idx = np.argmin(dists)
+            start_viz = max(0, closest_idx - 50)
+            end_viz = min(len(path), closest_idx + 150)
+            for pt in path[start_viz:end_viz]:
+                p = Point()
+                p.x = pt[0]
+                p.y = pt[1]
+                p.z = 0.0
+                marker.points.append(p)
+
+            marker_array.markers.append(marker)
+
+        self.marker_pub.publish(marker_array)
+
+
+if __name__ == "__main__":
     try:
         DistFinder()
         rospy.spin()
