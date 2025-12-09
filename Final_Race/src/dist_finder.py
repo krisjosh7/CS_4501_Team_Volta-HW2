@@ -240,13 +240,15 @@ class DistFinder:
             # (Standard ROS: 0 is Front. Your System: 0 is Right, 90 is Front)
             adjusted_angle = angle_deg + 90
 
+            print(adjusted_angle)
+
             # 3. Determine direction
             if adjusted_angle > 90:
                 # Obstacle is on the LEFT
-                print(f"Obstacle detected on LEFT at {adjusted_angle:.1f} degrees")
+                print("Obstacle detected on LEFT ")
             elif adjusted_angle < 90:
                 # Obstacle is on the RIGHT
-                print(f"Obstacle detected on RIGHT at {adjusted_angle:.1f} degrees")
+                print("Obstacle detected on RIGHT")
             else:
                 # Obstacle is dead CENTER (exactly 90)
                 print("Obstacle detected directly AHEAD")
@@ -309,7 +311,7 @@ class DistFinder:
             marker.pose.orientation.w = 1.0
             marker.scale.x = 0.05 #time width
 
-            is_valid = self.check_path_validity(path, scan_data, ranges)
+            # is_valid = self.check_path_validity(path, scan_data, ranges)
 
             if np.array_equal(path, selected_path):
                 marker.color.r = 0.0
@@ -318,11 +320,11 @@ class DistFinder:
                 marker.color.a = 1.0
                 marker.scale.x = 0.1
             
-            elif is_valid:
-                marker.color.r = 0.0
-                marker.color.g = 0.0
-                marker.color.b = 1.0
-                marker.color.a = 0.5
+            # elif is_valid:
+            #     marker.color.r = 0.0
+            #     marker.color.g = 0.0
+            #     marker.color.b = 1.0
+            #     marker.color.a = 0.5
             else:
                 marker.color.r = 1.0
                 marker.color.g = 0.0
