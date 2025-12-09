@@ -41,6 +41,7 @@ class DistFinder:
         # List of (path, offset_value) tuples
         # We generate multiple granular offsets to find a "valid" line that doesn"t hit the wall
         self.candidate_paths = [] 
+        self.last_selected_offset = 0.0 # State for stability 
         
         self.load_and_generate_racelines()
         
@@ -124,12 +125,39 @@ class DistFinder:
         selected_path = None
         selected_offset = 0.0
         
-        for path, offset in self.candidate_paths:
-            if self.check_path_validity(path, data):
-                selected_path = path
-                selected_offset = offset
-                # rospy.loginfo(f"Selected offset: {offset}m")
-                break
+        selected_path = None
+        selected_offset = 0.0
+        
+        # Stability Logic:
+        # 1. Always prefer Optimal Raceline (Offset 0.0) if valid.
+        # 2. If Optimal is blocked, prefer the LAST selected offset (stickiness) if valid.
+        # 3. Else, search for first valid candidate.
+        
+        # Helper to find path by offset (inefficient but safe or dictionary)
+        # Given small list (size ~5), linear search is fine.
+        def get_path_by_offset(off):
+            for p, o in self.candidate_paths:
+                if o == off: return p
+            return None
+
+        path_0 = get_path_by_offset(0.0)
+        path_last = get_path_by_offset(self.last_selected_offset)
+        
+        if path_0 is not None and self.check_path_validity(path_0, data):
+             selected_path = path_0
+             selected_offset = 0.0
+        elif path_last is not None and self.check_path_validity(path_last, data):
+             selected_path = path_last
+             selected_offset = self.last_selected_offset
+        else:
+            # Fallback to standard priority search
+            for path, offset in self.candidate_paths:
+                if self.check_path_validity(path, data):
+                    selected_path = path
+                    selected_offset = offset
+                    break
+        
+        self.last_selected_offset = selected_offset # Update state
         
         # Fallback: If ALL are blocked, pick the center line (offset 0) and hope/brake.
         if selected_path is None:

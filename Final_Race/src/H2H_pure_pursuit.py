@@ -31,6 +31,7 @@ global curr_polygon
 
 wp_seq          = 0
 control_polygon = PolygonStamped()
+last_closest_index = 0 # State for windowed search
 
 def dynamic_path_callback(msg):
     global plan
@@ -64,6 +65,7 @@ def purepursuit_control_node(data):
     global wp_seq
     global curr_polygon
     global plan
+    global last_closest_index
 
     if not plan:
         return # modifying safety check
@@ -77,14 +79,34 @@ def purepursuit_control_node(data):
     # Find the base projection of the car on this reference path.
     
     min_dist_sq = float('inf')
-    closest_index = 0
-    for i in range(len(plan)):
-        dx = odom_x - plan[i][0]
-        dy = odom_y - plan[i][1]
+    closest_index = last_closest_index
+    
+    # Windowed Search: Look -10 to +50 points around last known position
+    start_search = last_closest_index - 10
+    end_search = last_closest_index + 50
+    
+    for i in range(start_search, end_search):
+        idx = i % len(plan) # Wrap around
+        dx = odom_x - plan[idx][0]
+        dy = odom_y - plan[idx][1]
         dist_sq = dx*dx + dy*dy
         if dist_sq < min_dist_sq:
             min_dist_sq = dist_sq
-            closest_index = i
+            closest_index = idx
+
+    # Fail-safe: If we get lost (too far), do global search
+    if min_dist_sq > 25.0: # > 5 meters error
+        rospy.logwarn("Car lost sync with path. Resetting search.")
+        min_dist_sq = float('inf')
+        for i in range(len(plan)):
+            dx = odom_x - plan[i][0]
+            dy = odom_y - plan[i][1]
+            dist_sq = dx*dx + dy*dy
+            if dist_sq < min_dist_sq:
+                min_dist_sq = dist_sq
+                closest_index = i
+
+    last_closest_index = closest_index # Update state
     
     pose_x = plan[closest_index][0]
     pose_y = plan[closest_index][1]
@@ -102,8 +124,7 @@ def purepursuit_control_node(data):
 
     # Scale lookahead: Small at low speed (0.8m), Large at high speed (2.5m)
     # These constants (0.1 scaling factor) need tuning on the track
-    lookahead_distance = 0.5 + (0.0175 * current_vel)
-    lookahead_distance = max(0.5, min(lookahead_distance, 1.5)) # Clamp values
+    lookahead_distance = 1.5
 
 
     # Identify the goal or target point for the car.
