@@ -75,7 +75,7 @@ class DistFinder:
         
         # Offsets in meters. 0.0 is the optimal line.
         # We prioritize small deviations over large ones.
-        offsets = [0.0, 0.3, -0.3]
+        offsets = [-0.3, 0.0, 0.3]
         
         for off in offsets:
             if off == 0.0:
@@ -152,45 +152,13 @@ class DistFinder:
         
         selected_path = None
         selected_offset = 0.0
-        
-        selected_path = None
-        selected_offset = 0.0
-        
-        # Stability Logic:
-        # 1. Always prefer Optimal Raceline (Offset 0.0) if valid.
-        # 2. If Optimal is blocked, prefer the LAST selected offset (stickiness) if valid.
-        # 3. Else, search for first valid candidate.
-        
-        # Helper to find path by offset (inefficient but safe or dictionary)
-        # Given small list (size ~5), linear search is fine.
-        def get_path_by_offset(off):
-            for p, o in self.candidate_paths:
-                if o == off: return p
-            return None
 
-        path_0 = get_path_by_offset(0.0)
-        path_last = get_path_by_offset(self.last_selected_offset)
-        
-        if path_0 is not None and self.check_path_validity(path_0, data, ranges):
-             selected_path = path_0
-             selected_offset = 0.0
-        elif path_last is not None and self.check_path_validity(path_last, data, ranges):
-             selected_path = path_last
-             selected_offset = self.last_selected_offset
-        else:
-            # Fallback to standard priority search
-            for path, offset in self.candidate_paths:
-                if self.check_path_validity(path, data, ranges):
-                    selected_path = path
-                    selected_offset = offset
-                    break
-        
-        self.last_selected_offset = selected_offset # Update state
+        self.closest_obstacle(data)  # For debugging/logging
         
         # Fallback: If ALL are blocked, pick the center line (offset 0) and hope/brake.
         if selected_path is None:
             rospy.logwarn("ALL PATHS BLOCKED! Defaulting to Center.")
-            selected_path = self.candidate_paths[0][0] # The 0.0 offset path
+            selected_path = self.candidate_paths[1][0] # The 0.0 offset path
             selected_offset = 0.0
 
         # 3. Calculate Pure Pursuit Steering
@@ -206,56 +174,82 @@ class DistFinder:
         self.publish_path_viz(selected_path)
         self.publish_all_paths(data, selected_path)
 
-    def check_path_validity(self, path, scan_data, ranges):
-        # Find the closest point on the path to the car
-        # Then check the next N meters of the path against the LiDAR
+    def closest_obstacle(self,data):
+        # 1. Convert ranges to a list for mutability
+        ranges = list(data.ranges)
+        n = len(ranges)
+
+        # 2. Define the sector of interest (-70 to 70 degrees)
+        start_angle = int((math.radians(-70) - data.angle_min) / data.angle_increment)
+        end_angle   = int((math.radians( 70) - data.angle_min) / data.angle_increment)
+
+        # 3. Clamp indices to ensure they are within the array bounds
+        i_min = max(0, min(n-1, start_angle))
+        i_max = max(0, min(n-1, end_angle))
+        if i_min > i_max:
+            i_min, i_max = i_max, i_min
+
+        # 4. Clean the data: Handle NaNs, Infs, and Cap distances
+        # We focus only on the sector we care about to save processing time
+        for i in range(i_min, i_max+1):
+            if math.isnan(ranges[i]) or math.isinf(ranges[i]):
+                # If infinite/nan, set to max range (no obstacle)
+                ranges[i] = data.range_max
+            elif ranges[i] > data.range_max:
+                ranges[i] = data.range_max
+
+        # --- CHANGED SECTION START ---
+
+        # 5. Identify the Closest Obstacle
+        # We extract the relevant sector as a numpy array for easy math
+        sector_ranges = np.array(ranges[i_min:i_max+1])
         
-        # 1. Find closest index
-        dists = np.linalg.norm(path[:, :2] - np.array([self.x, self.y]), axis=1)
-        closest_idx = np.argmin(dists)
+        # Safety check: if the sector is empty
+        if sector_ranges.size == 0:
+            return
         
-        # 2. Check points ahead
-        check_dist = 1.0 # Check 3 meters ahead
-        dist_checked = 0.0
-        curr_idx = closest_idx
+        # Filter out values below range_min (noise/errors)
+        # We use boolean indexing to keep only valid readings
+        valid_indices = np.where(sector_ranges > data.range_min)[0]
         
-        while dist_checked < check_dist:
-            # Get point in global frame
-            pt_global = path[curr_idx]
+        if valid_indices.size == 0:
+            # If all data is invalid (too close or errors), assume open space or handle safety
+            min_dist = data.range_max
+            closest_angle = 0.0 
+        else:
+            # Get only the valid ranges
+            valid_ranges = sector_ranges[valid_indices]
             
-            # Transform to car frame
-            dx = pt_global[0] - self.x
-            dy = pt_global[1] - self.y
-            
-            x_local = dx * math.cos(-self.heading) - dy * math.sin(-self.heading)
-            y_local = dx * math.sin(-self.heading) + dy * math.cos(-self.heading)
-            
-            # If point is behind us, ignore
-            if x_local < 0:
-                curr_idx = (curr_idx + 1) % len(path)
-                continue
-                
-            # Convert to polar (r, theta) to match LiDAR
-            r = math.sqrt(x_local**2 + y_local**2)
-            theta = math.atan2(y_local, x_local)
-            
-            # Find corresponding LiDAR index
-            if scan_data.angle_min <= theta <= scan_data.angle_max:
-                idx = int((theta - scan_data.angle_min) / scan_data.angle_increment)
-                if 0 <= idx < len(ranges):
-                    lidar_dist = ranges[idx]
-                    
-                    # If LiDAR sees something closer than the path point (minus safety margin)
-                    # It means the path is blocked
-                    if lidar_dist < (r + 0.3): # 0.3m buffer
-                        # rospy.logwarn(f"Blocked at dist {lidar_dist:.2f} vs Path {r:.2f} (idx {idx})")
-                        return False
-            
-            # Move to next point
-            dist_checked += np.linalg.norm(path[(curr_idx+1)%len(path), :2] - path[curr_idx, :2])
-            curr_idx = (curr_idx + 1) % len(path)
-            
-        return True
+            # Robust Minimum: Sort and take average of the closest 3 points to avoid speckle noise
+            sorted_ranges = np.sort(valid_ranges)
+            if len(sorted_ranges) >= 3:
+                min_dist = np.mean(sorted_ranges[:3])
+            else:
+                min_dist = sorted_ranges[0]
+
+            # Find the index of the value closest to this average minimum in the original array
+            # This helps us find the angle roughly corresponding to that distance
+            min_idx_local = np.argmin(np.abs(sector_ranges - min_dist))
+            target_idx = i_min + min_idx_local
+            closest_angle = data.angle_min + target_idx * data.angle_increment
+
+            # 1. Convert the raw radian angle to degrees
+            angle_deg = math.degrees(closest_angle)
+
+            # 2. Add the 90-degree offset to match your system 
+            # (Standard ROS: 0 is Front. Your System: 0 is Right, 90 is Front)
+            adjusted_angle = angle_deg + 90
+
+            # 3. Determine direction
+            if adjusted_angle > 90:
+                # Obstacle is on the LEFT
+                print(f"Obstacle detected on LEFT at {adjusted_angle:.1f} degrees")
+            elif adjusted_angle < 90:
+                # Obstacle is on the RIGHT
+                print(f"Obstacle detected on RIGHT at {adjusted_angle:.1f} degrees")
+            else:
+                # Obstacle is dead CENTER (exactly 90)
+                print("Obstacle detected directly AHEAD")
 
     def get_pure_pursuit_command(self, path):
         # 1. Find closest point
