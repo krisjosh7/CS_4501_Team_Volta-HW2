@@ -177,35 +177,8 @@ class DistFinder:
             selected_path = self.candidate_paths[1][0] # The 0.0 offset path
             selected_offset = 0.0
         
-        p_x = min_dist * math.cos(angle_of_closest)
-        p_y = min_dist * math.sin(angle_of_closest)
-
-        marker = Marker()
-        marker.header = data.header
-        marker.ns = "closest_obstacle"
-        marker.id = 0
-        marker.type = Marker.SPHERE
-        marker.action = Marker.ADD
-
-        marker.pose.position.x = p_x
-        marker.pose.position.y = p_y
-        marker.pose.position.z = 0.0
-
-        marker.pose.orientation.x = 0.0
-        marker.pose.orientation.y = 0.0
-        marker.pose.orientation.z = 0.0
-        marker.pose.orientation.w = 1.0
-
-        marker.scale.x = 0.2
-        marker.scale.y = 0.2
-        marker.scale.z = 0.2
-
-        marker.color.r = 0.0
-        marker.color.a = 1.0
-        marker.color.b = 1.0
-        marker.color.g = 0.0
-        
-        self.closest_pub.publish(marker)
+        # Debug: Publish closest obstacle marker
+        self.publish_obstacle_marker(data.header, min_dist, angle_of_closest)
 
         # 3. Calculate Pure Pursuit Steering
         steering_angle = self.get_pure_pursuit_command(selected_path)
@@ -217,7 +190,7 @@ class DistFinder:
         self.gap_pub.publish(msg)
         
         # 5. Visualize
-        self.publish_path_viz(selected_path)
+        self.publish_selected_path(selected_path)
         self.publish_all_paths(data, selected_path)
 
     def closest_obstacle(self,data):
@@ -318,7 +291,7 @@ class DistFinder:
         
         return steering_angle # Return angle and target velocity
 
-    def publish_path_viz(self, path):
+    def publish_selected_path(self, path):
         msg = Path()
         msg.header.frame_id = "map"
         msg.header.stamp = rospy.Time.now()
@@ -333,6 +306,7 @@ class DistFinder:
         self.path_pub.publish(msg)
 
     def publish_all_paths(self, scan_data, selected_path):
+
         marker_array = MarkerArray()
 
         for i, (path, offset) in enumerate(self.candidate_paths):
@@ -380,6 +354,24 @@ class DistFinder:
             marker_array.markers.append(marker)
 
         self.marker_pub.publish(marker_array)
+
+    def publish_obstacle_marker(self, header, min_dist, angle):
+        p_x = min_dist * math.cos(angle)
+        p_y = min_dist * math.sin(angle)
+
+        marker = Marker()
+        marker.header = header
+        marker.ns = "closest_obstacle"
+        marker.id = 0
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+        marker.pose.position.x = p_x
+        marker.pose.position.y = p_y
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = 0.2; marker.scale.y = 0.2; marker.scale.z = 0.2
+        marker.color.a = 1.0; marker.color.r = 1.0 
+        
+        self.closest_pub.publish(marker)
 
 
 if __name__ == "__main__":
