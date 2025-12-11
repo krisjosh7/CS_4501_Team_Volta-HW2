@@ -7,13 +7,13 @@ import os
 import tf
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseStamped, Point
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, Bool
 from visualization_msgs.msg import Marker, MarkerArray
 from nav_msgs.msg import Path
 
 # --- CONFIGURATION ---
 CAR_NAME = "car_8"
-RACELINE_FILE = "H2H_raceline.csv" # Assumes it"s in the same folder structure as pure_pursuit
+RACELINE_FILE = "optimal_egg.csv" # Assumes it"s in the same folder structure as pure_pursuit
 LOOKAHEAD_DIST = 1.5 # Meters
 WHEELBASE_LEN = 0.325
 OBSTACLE_THRESHOLD = 1.0 # Meters (Distance to consider a point "blocked")
@@ -28,6 +28,7 @@ class DistFinder:
         self.pose_sub = rospy.Subscriber('/car_8/particle_filter/viz/inferred_pose', PoseStamped, self.pose_callback)
         
         self.gap_pub = rospy.Publisher('/car_8/gap_info', Float32MultiArray, queue_size=1)
+        self.safe = rospy.Publisher('/car_8/safety', Bool, queue_size=1)
         self.path_pub = rospy.Publisher('/car_8/selected_path', Path, queue_size=1)
         self.marker_pub = rospy.Publisher('/car_8/debug_markers', MarkerArray, queue_size=1)
         self.closest_pub = rospy.Publisher('/car_8/closest_marker', Marker, queue_size=1)
@@ -51,7 +52,7 @@ class DistFinder:
     def load_and_generate_racelines(self):
         # 1. Load Center Line
         # Try to find the file in the standard location
-        file_path = os.path.expanduser("~/depend_ws/src/f1tenth_purepursuit/path/H2H_raceline.csv")
+        file_path = os.path.expanduser("~/depend_ws/src/f1tenth_purepursuit/path/optimal_egg.csv")
         if not os.path.exists(file_path):
             rospy.logwarn("Raceline file not found. Trying local directory.")
             file_path = RACELINE_FILE # Fallback
@@ -155,23 +156,27 @@ class DistFinder:
         selected_offset = 0.0
 
         min_dist, angle_of_closest = self.closest_obstacle(data)  # For debugging/logging
-
+        is_danger = False
         # 3. Determine direction
         if min_dist > 1.0:
             print("No obstacles detected.")
             selected_path = self.candidate_paths[1][0]
+            is_danger = False
         elif angle_of_closest > 15 and min_dist <= 1.0:
             # Obstacle is on the LEFT
             print("LEFT| angle: " + str(angle_of_closest) + " dist: " + str(min_dist))
             selected_path = selected_path = self.candidate_paths[0][0] 
+            is_danger = True
         elif angle_of_closest < -15 and min_dist <= 1.0:
             # Obstacle is on the RIGHT
             print("RIGHT| angle: " + str(angle_of_closest) + " dist: " + str(min_dist))
             selected_path = self.candidate_paths[2][0] 
+            is_danger = True
         else:
             # Obstacle is dead CENTER (exactly 90)
             print("Ahead| angle: " + str(angle_of_closest) + " dist: " + str(min_dist))
             selected_path = selected_path = self.candidate_paths[0][0]
+            is_danger = True
         print("---------------------")
         
         # Fallback: If ALL are blocked, pick the center line (offset 0) and hope/brake.
@@ -180,8 +185,10 @@ class DistFinder:
             selected_path = self.candidate_paths[1][0] # The 0.0 offset path
         
         # Debug: Publish closest obstacle marker
-        self.publish_obstacle_marker(data.header, min_dist, angle_of_closest)
-
+        self.publish_obstacle_marker(data.header, min_dist, angle_of_closest) 
+        msg = Bool()
+        msg.data = is_danger
+        self.safe.publish(msg)
         # 3. Calculate Pure Pursuit Steering
         steering_angle = self.get_pure_pursuit_command(selected_path)
         

@@ -6,17 +6,20 @@ import csv
 import math
 import tf
 from ackermann_msgs.msg import AckermannDrive
-from geometry_msgs.msg import PolygonStamped, Point32, PoseStamped
+from geometry_msgs.msg import PolygonStamped, Point32, PoseStamped, Point
 from nav_msgs.msg import Path, Odometry
+from visualization_msgs.msg import Marker
+from std_msgs.msg import Bool
+
 
 # --- TUNING PARAMETERS ---
-LOOKAHEAD_MIN = 1.5  # Minimum lookahead (meters) for low speeds
-LOOKAHEAD_MAX = 1.5  # Maximum lookahead (meters) for high speeds
+LOOKAHEAD_MIN = 1.7  # Minimum lookahead (meters) for low speeds
+LOOKAHEAD_MAX = 1.7  # Maximum lookahead (meters) for high speeds
 LOOKAHEAD_GAIN = 0.25 # Lookahead = Gain * Velocity
 WHEELBASE_LEN = 0.325
 STEERING_RANGE = 100.0 # Range [-100, 100] matches your servo setup
-MAX_STEERING_ANGLE = 0.4189 # ~24 degrees (Matches your control.py limit)
-
+MAX_STEERING_ANGLE = 0.4189 # ~24 degrees (Matches your control.py limit) 
+SERVO_OFFSET = -3 # in degrees (- is right and + is left)
 # --- GLOBAL VARIABLES ---
 plan = []               # [x, y, velocity]
 frame_id = 'map'
@@ -36,10 +39,12 @@ control_polygon = PolygonStamped()
 # WAYPOINT TRACKING STATE (The Fix)
 last_closest_index = 0 
 
-# Publishers
+# Publisher
 command_pub = rospy.Publisher('/{}/offboard/command'.format(car_name), AckermannDrive, queue_size=1)
 polygon_pub = rospy.Publisher('/{}/purepursuit_control/visualize'.format(car_name), PolygonStamped, queue_size=1)
 path_pub    = rospy.Publisher('/{}/purepursuit_control/path'.format(car_name), Path, queue_size=1, latch=True)
+steering_pub = rospy.Publisher("/car_8/steering_arrow", Marker, queue_size=2)
+target_marker = rospy.Publisher('/car_8/target_marker', Marker, queue_size=1)
 
 def construct_path():
     """ 
@@ -90,10 +95,11 @@ def purepursuit_control_node(data):
     global wp_seq
     global current_velocity
     global last_closest_index # Access the tracking variable
-    
+
     if not plan:
         return
-
+    #ORIGINAL PURE PURSUIT CODE --- DO NOT CHANGE ANYTHING IN THIS ELSE------
+    print("SAFETY IS NOT ACTIVE  ")
     command = AckermannDrive()
     
     # 1. Obtain current position
@@ -107,6 +113,7 @@ def purepursuit_control_node(data):
         data.pose.orientation.z,
         data.pose.orientation.w
     ))[2]
+
 
     # --- STEP 2: FIND CLOSEST POINT (WINDOWED SEARCH FIX) ---
     
@@ -171,7 +178,32 @@ def purepursuit_control_node(data):
     
     target_x = plan[target_index][0]
     target_y = plan[target_index][1]
-    target_v = plan[target_index][2]
+
+    marker = Marker()
+    marker.header = data.header
+    marker.ns = "target"
+    marker.id = 0
+    marker.type = Marker.SPHERE
+    marker.action = Marker.ADD
+
+    marker.pose.position.x = target_x
+    marker.pose.position.y = target_y
+    marker.pose.position.z = 0.0
+
+    marker.pose.orientation.x = 0.0
+    marker.pose.orientation.y = 0.0
+    marker.pose.orientation.z = 0.0
+    marker.pose.orientation.w = 1.0
+
+    marker.scale.x = 0.2
+    marker.scale.y = 0.2
+    marker.scale.z = 0.2
+
+    marker.color.r = 0.0
+    marker.color.a = 1.0
+    marker.color.b = 1.0
+    marker.color.g = 0.0
+    target_marker.publish(marker)
 
     # --- STEP 5: CALCULATE STEERING ---
     # Transform target to vehicle frame
@@ -189,17 +221,59 @@ def purepursuit_control_node(data):
     # Pure Pursuit Formula
     steering_angle_rad = math.atan2(2.0 * WHEELBASE_LEN * math.sin(alpha), LOOKAHEAD_MAX)
 
+    steering = Marker()
+    steering.header.frame_id = "car_8_base_link"  # C_8_basehanged to car_8
+    steering.header.stamp = rospy.Time.now()
+    steering.type = Marker.ARROW
+    steering.id = 0
+    steering.scale.x = 0.1  # arrow length
+    steering.scale.y = 0.1  # arrow width
+    steering.scale.z = 0.1  # arrow heighter
+    steering.pose.orientation.w = 1.0
+    steering.pose.position.x = 0.0
+    steering.pose.position.y = 0.0
+    steering.pose.position.z = 0.0
+
+
+    q = tf.transformations.quaternion_from_euler(0, 0, steering_angle_rad)
+    steering.pose.orientation.x = q[0]
+    steering.pose.orientation.y = q[1]
+    steering.pose.orientation.z = q[2]
+    steering.pose.orientation.w = q[3]
+
+    steering.color.r = 0.0
+    steering.color.g = 0.0
+    steering.color.b = 1.0
+    steering.color.a = 1.0
+    
+    # Arrow points from origin to target direction
+    steering.points = [
+        Point(0, 0, 0),
+        Point(
+            math.cos(steering_angle_rad),
+            math.sin(steering_angle_rad),
+            0
+        )
+    ]
+    
+    steering_pub.publish(steering)
+
     # Clamp and Scale
     steering_angle_rad = max(-MAX_STEERING_ANGLE, min(MAX_STEERING_ANGLE, steering_angle_rad))
     command.steering_angle = (steering_angle_rad / MAX_STEERING_ANGLE) * STEERING_RANGE
 
+    if math.degrees(steering_angle_rad) < -5:
+        command.steering_angle = (steering_angle_rad + math.radians(SERVO_OFFSET) / MAX_STEERING_ANGLE) * STEERING_RANGE
+
+
     # Assign Velocity
 
-    max_speed = 60.0  # m/s, tune this
-    min_speed = 30.0  # m/s, tune this
+    max_speed = 65.0  # m/s, tune this
+    min_speed = 20.0  # m/s, tune this
     
     # Linearly scale speed based on the magnitude of the steering angle
     abs_steering = abs(command.steering_angle)
+
     command.speed = max_speed - (abs_steering / STEERING_RANGE) * (max_speed - min_speed)
 
     # command.speed = target_v
@@ -238,6 +312,7 @@ if __name__ == '__main__':
         
         # Subscriber for Velocity (Odometry)
         rospy.Subscriber('/{}/odom'.format(car_name), Odometry, odom_callback)
+        
         
         rospy.spin()
 
