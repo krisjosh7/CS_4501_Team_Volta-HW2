@@ -6,11 +6,14 @@ import tf
 from ackermann_msgs.msg import AckermannDrive
 from geometry_msgs.msg import PolygonStamped, Point32, PoseStamped
 from nav_msgs.msg import Path
+from visualization_msgs.msg import Marker
+from geometry_msgs.msg import Point
+
 
 # --- CONFIGURATION ---
 STEERING_RANGE = 100.0
 WHEELBASE_LEN = 0.325
-LOOKAHEAD_DIST = 1.5 
+LOOKAHEAD_DIST = 1.5
 MAX_STEERING_ANGLE = math.radians(30) # ~0.52 rad
 
 # --- GLOBALS ---
@@ -27,6 +30,8 @@ last_closest_index = 0 # State for windowed search
 command_pub = rospy.Publisher('/{}/offboard/command'.format(car_name), AckermannDrive, queue_size=1)
 polygon_pub = rospy.Publisher('/{}/purepursuit_control/visualize'.format(car_name), PolygonStamped, queue_size=1)
 # We don't need to publish path again since dist_finder does it, but we can if debugging is needed.
+target_marker = rospy.Publisher('/car_8/target_marker', Marker, queue_size=1)
+steering_pub = rospy.Publisher("/car_8/steering_arrow", Marker, queue_size=2)
 
 def dynamic_path_callback(msg):
     global plan
@@ -104,6 +109,32 @@ def purepursuit_control_node(data):
             break
             
     target_pt = plan[target_index]
+
+    marker = Marker()
+    marker.header = data.header
+    marker.ns = "target"
+    marker.id = 0
+    marker.type = Marker.SPHERE
+    marker.action = Marker.ADD
+
+    marker.pose.position.x = target_pt[0]
+    marker.pose.position.y = target_pt[1]
+    marker.pose.position.z = 0.0
+
+    marker.pose.orientation.x = 0.0
+    marker.pose.orientation.y = 0.0
+    marker.pose.orientation.z = 0.0
+    marker.pose.orientation.w = 1.0
+
+    marker.scale.x = 0.2
+    marker.scale.y = 0.2
+    marker.scale.z = 0.2
+
+    marker.color.r = 0.0
+    marker.color.a = 1.0
+    marker.color.b = 1.0
+    marker.color.g = 0.0
+    target_marker.publish(marker)
     
     # 5. Calculate Steering
     dx = target_pt[0] - odom_x
@@ -111,26 +142,68 @@ def purepursuit_control_node(data):
     
     x_rel = dx * math.cos(heading) + dy * math.sin(heading)
     y_rel = -dx * math.sin(heading) + dy * math.cos(heading)
+ 
+    ratio = y_rel/LOOKAHEAD_DIST
+    ratio = max(-1.0, min(1.0, ratio))
     
-    alpha = math.atan2(y_rel, x_rel)
+    alpha = math.asin(ratio)
     actual_lookahead = math.sqrt(dx**2 + dy**2)
     
-    steering_angle_rad = math.atan2(2.0 * WHEELBASE_LEN * math.sin(alpha), actual_lookahead)
+    steering_angle_rad = math.atan2(2.0 * WHEELBASE_LEN * math.sin(alpha), LOOKAHEAD_DIST)
     
     # 6. Clamp and Publish
     steering_angle_rad = max(-MAX_STEERING_ANGLE, min(MAX_STEERING_ANGLE, steering_angle_rad))
     
+
+    steering = Marker()
+    steering.header.frame_id = "car_8_base_link"  # C_8_basehanged to car_8
+    steering.header.stamp = rospy.Time.now()
+    steering.type = Marker.ARROW
+    steering.id = 0
+    steering.scale.x = 0.1  # arrow length
+    steering.scale.y = 0.1  # arrow width
+    steering.scale.z = 0.1  # arrow heighter
+    steering.pose.orientation.w = 1.0
+    steering.pose.position.x = 0.0
+    steering.pose.position.y = 0.0
+    steering.pose.position.z = 0.0
+
+
+    q = tf.transformations.quaternion_from_euler(0, 0, steering_angle_rad)
+    steering.pose.orientation.x = q[0]
+    steering.pose.orientation.y = q[1]
+    steering.pose.orientation.z = q[2]
+    steering.pose.orientation.w = q[3]
+
+    steering.color.r = 0.0
+    steering.color.g = 0.0
+    steering.color.b = 1.0
+    steering.color.a = 1.0
+    
+    # Arrow points from origin to target direction
+    steering.points = [
+        Point(0, 0, 0),
+        Point(
+            math.cos(steering_angle_rad),
+            math.sin(steering_angle_rad),
+            0
+        )
+    ]
+    
+    steering_pub.publish(steering)
+
     command = AckermannDrive()
     command.steering_angle = (steering_angle_rad / MAX_STEERING_ANGLE) * STEERING_RANGE
-    
+   
+
     # Dynamic Velocity
     steering_difficulty = abs(steering_angle_rad)
     if steering_difficulty < math.radians(10):
-        command.speed = 35.0 
+        command.speed = 45.0 
     elif steering_difficulty < math.radians(20):
-        command.speed = 25.0
+        command.speed = 35.0
     else:
-        command.speed = 15.0 
+        command.speed = 20.0 
 
     command_pub.publish(command)
     

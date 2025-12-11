@@ -13,12 +13,11 @@ from nav_msgs.msg import Path
 
 # --- CONFIGURATION ---
 CAR_NAME = "car_8"
-RACELINE_FILE = "base_map_2_raceline.csv"  # Assumes it's in the same folder structure as pure_pursuit
-LOOKAHEAD_DIST = 1.5  # Meters
+RACELINE_FILE = "H2H_raceline.csv" # Assumes it"s in the same folder structure as pure_pursuit
+LOOKAHEAD_DIST = 1.5 # Meters
 WHEELBASE_LEN = 0.325
-OBSTACLE_THRESHOLD = 1.0  # Meters (Distance to consider a point "blocked")
-LANE_OFFSET = 0.6  # Meters (Distance between parallel lanes)
-
+OBSTACLE_THRESHOLD = 1.0 # Meters (Distance to consider a point "blocked")
+LANE_OFFSET = 0.6 # Meters (Distance between parallel lanes)
 
 class DistFinder:
     def __init__(self):
@@ -37,14 +36,13 @@ class DistFinder:
         self.x = 0.0
         self.y = 0.0
         self.heading = 0.0
-        self.current_speed = 0.0  # We might need odom for this if we want dynamic lookahead
+        self.current_speed = 0.0 # We might need odom for this if we want dynamic lookahead
         self.center_line = []
-        
         # Racelines
         # List of (path, offset_value) tuples
-        # We generate multiple granular offsets to find a "valid" line that doesn't hit the wall
-        self.candidate_paths = []
-        self.last_selected_offset = 0.0  # State for stability
+        # We generate multiple granular offsets to find a "valid" line that doesn"t hit the wall
+        self.candidate_paths = [] 
+        self.last_selected_offset = 0.0 # State for stability 
         
         self.load_and_generate_racelines()
         
@@ -53,19 +51,19 @@ class DistFinder:
     def load_and_generate_racelines(self):
         # 1. Load Center Line
         # Try to find the file in the standard location
-        file_path = os.path.expanduser("~/depend_ws/src/f1tenth_purepursuit/path/base_map_2_raceline.csv")
+        file_path = os.path.expanduser("~/depend_ws/src/f1tenth_purepursuit/path/H2H_raceline.csv")
         if not os.path.exists(file_path):
             rospy.logwarn("Raceline file not found. Trying local directory.")
-            file_path = RACELINE_FILE  # Fallback
+            file_path = RACELINE_FILE # Fallback
             
         try:
             with open(file_path) as csv_file:
                 csv_reader = csv.reader(csv_file, delimiter=",")
                 for waypoint in csv_reader:
-                    self.center_line.append([float(waypoint[0]), float(waypoint[1])])  # x, y
+                    self.center_line.append([float(waypoint[0]), float(waypoint[1])]) # x, y
             rospy.loginfo("Loaded waypoints.")
         except Exception as e:
-            rospy.logerr(e)
+            rospy.logerr(e) 
             rospy.logerr("Failed to load raceline: e")
             return
 
@@ -78,7 +76,7 @@ class DistFinder:
         
         # Offsets in meters. 0.0 is the optimal line.
         # We prioritize small deviations over large ones.
-        offsets = [-0.3, 0.0, 0.3]
+        offsets = [-0.3, 0.0, 0.7]
         
         for off in offsets:
             if off == 0.0:
@@ -89,25 +87,25 @@ class DistFinder:
                 self.candidate_paths.append((new_path, off))
         
         rospy.loginfo("Generated candidate racelines.")
-
+        
     def generate_offset(self, path, offset):
         new_path = []
         for i in range(len(path)):
             # Get tangent vector
             p1 = path[i]
-            p2 = path[(i + 1) % len(path)]
+            p2 = path[(i+1) % len(path)]
             
             dx = p2[0] - p1[0]
             dy = p2[1] - p1[1]
             yaw = math.atan2(dy, dx)
             
             # Perpendicular vector (+90 degrees)
-            norm_yaw = yaw + math.pi / 2
+            norm_yaw = yaw + math.pi/2
             
             nx = offset * math.cos(norm_yaw)
             ny = offset * math.sin(norm_yaw)
             
-            new_path.append([p1[0] + nx, p1[1] + ny])  # Keep same velocity
+            new_path.append([p1[0] + nx, p1[1] + ny]) # Keep same velocity
             
         return np.array(new_path)
 
@@ -146,66 +144,43 @@ class DistFinder:
         
         # Create a dummy data object to pass cleaned ranges to check functions
         # (Or update valid check to take ranges directly)
+        
         # ... logic continues ...
 
         # 1. Check Collisions & Select Best Line
         # We iterate through candidates in order of priority (smallest offset first).
         # The first one that is "valid" (no collisions) is chosen.
+        
         selected_path = None
         selected_offset = 0.0
 
         min_dist, angle_of_closest = self.closest_obstacle(data)  # For debugging/logging
 
         # 3. Determine direction
-        if angle_of_closest > 20 and min_dist <= 0.5:
+        if min_dist > 1.0:
+            print("No obstacles detected.")
+            selected_path = self.candidate_paths[1][0]
+        elif angle_of_closest > 15 and min_dist <= 1.0:
             # Obstacle is on the LEFT
             print("LEFT| angle: " + str(angle_of_closest) + " dist: " + str(min_dist))
-            selected_path = self.candidate_paths[2][0]
-        elif angle_of_closest < -20 and min_dist <= 0.5:
+            selected_path = selected_path = self.candidate_paths[0][0] 
+        elif angle_of_closest < -15 and min_dist <= 1.0:
             # Obstacle is on the RIGHT
             print("RIGHT| angle: " + str(angle_of_closest) + " dist: " + str(min_dist))
-            selected_path = self.candidate_paths[0][0]
+            selected_path = self.candidate_paths[2][0] 
         else:
             # Obstacle is dead CENTER (exactly 90)
             print("Ahead| angle: " + str(angle_of_closest) + " dist: " + str(min_dist))
-
+            selected_path = selected_path = self.candidate_paths[0][0]
         print("---------------------")
         
         # Fallback: If ALL are blocked, pick the center line (offset 0) and hope/brake.
         if selected_path is None:
-            # rospy.logwarn("ALL PATHS BLOCKED! Defaulting to Center.")
-            selected_path = self.candidate_paths[1][0]  # The 0.0 offset path
-            selected_offset = 0.0
+            #rospy.logwarn("ALL PATHS BLOCKED! Defaulting to Center.")
+            selected_path = self.candidate_paths[1][0] # The 0.0 offset path
         
-        p_x = min_dist * math.cos(angle_of_closest)
-        p_y = min_dist * math.sin(angle_of_closest)
-
-        marker = Marker()
-        marker.header = data.header
-        marker.ns = "closest_obstacle"
-        marker.id = 0
-        marker.type = Marker.SPHERE
-        marker.action = Marker.ADD
-
-        marker.pose.position.x = p_x
-        marker.pose.position.y = p_y
-        marker.pose.position.z = 0.0
-
-        marker.pose.orientation.x = 0.0
-        marker.pose.orientation.y = 0.0
-        marker.pose.orientation.z = 0.0
-        marker.pose.orientation.w = 1.0
-
-        marker.scale.x = 0.2
-        marker.scale.y = 0.2
-        marker.scale.z = 0.2
-
-        marker.color.r = 0.0
-        marker.color.a = 1.0
-        marker.color.b = 1.0
-        marker.color.g = 0.0
-        
-        self.closest_pub.publish(marker)
+        # Debug: Publish closest obstacle marker
+        self.publish_obstacle_marker(data.header, min_dist, angle_of_closest)
 
         # 3. Calculate Pure Pursuit Steering
         steering_angle = self.get_pure_pursuit_command(selected_path)
@@ -217,27 +192,27 @@ class DistFinder:
         self.gap_pub.publish(msg)
         
         # 5. Visualize
-        self.publish_path_viz(selected_path)
+        self.publish_selected_path(selected_path)
         self.publish_all_paths(data, selected_path)
 
-    def closest_obstacle(self, data):
+    def closest_obstacle(self,data):
         # 1. Convert ranges to a list for mutability
         ranges = list(data.ranges)
         n = len(ranges)
 
         # 2. Define the sector of interest (-70 to 70 degrees)
         start_angle = int((math.radians(-70) - data.angle_min) / data.angle_increment)
-        end_angle = int((math.radians(70) - data.angle_min) / data.angle_increment)
+        end_angle   = int((math.radians( 70) - data.angle_min) / data.angle_increment)
 
         # 3. Clamp indices to ensure they are within the array bounds
-        i_min = max(0, min(n - 1, start_angle))
-        i_max = max(0, min(n - 1, end_angle))
+        i_min = max(0, min(n-1, start_angle))
+        i_max = max(0, min(n-1, end_angle))
         if i_min > i_max:
             i_min, i_max = i_max, i_min
 
         # 4. Clean the data: Handle NaNs, Infs, and Cap distances
         # We focus only on the sector we care about to save processing time
-        for i in range(i_min, i_max + 1):
+        for i in range(i_min, i_max+1):
             if math.isnan(ranges[i]) or math.isinf(ranges[i]):
                 # If infinite/nan, set to max range (no obstacle)
                 ranges[i] = data.range_max
@@ -248,12 +223,12 @@ class DistFinder:
 
         # 5. Identify the Closest Obstacle
         # We extract the relevant sector as a numpy array for easy math
-        sector_ranges = np.array(ranges[i_min:i_max + 1])
+        sector_ranges = np.array(ranges[i_min:i_max+1])
         
         # Safety check: if the sector is empty
         if sector_ranges.size == 0:
-            return 100.0, 0.0  # Return dummy values if empty
-
+            return
+        
         # Filter out values below range_min (noise/errors)
         # We use boolean indexing to keep only valid readings
         valid_indices = np.where(sector_ranges > data.range_min)[0]
@@ -261,7 +236,7 @@ class DistFinder:
         if valid_indices.size == 0:
             # If all data is invalid (too close or errors), assume open space or handle safety
             min_dist = data.range_max
-            closest_angle = 0.0
+            closest_angle = 0.0 
         else:
             # Get only the valid ranges
             valid_ranges = sector_ranges[valid_indices]
@@ -282,7 +257,7 @@ class DistFinder:
             # 1. Convert the raw radian angle to degrees
             angle_deg = math.degrees(closest_angle)
 
-            # 2. Add the 90-degree offset to match your system
+            # 2. Add the 90-degree offset to match your system 
             # (Standard ROS: 0 is Front. Your System: 0 is Right, 90 is Front)
             adjusted_angle = angle_deg
 
@@ -295,7 +270,7 @@ class DistFinder:
         
         # 2. Find lookahead point
         target_idx = closest_idx
-        for i in range(closest_idx, len(path) + closest_idx):  # Handle wrap-around
+        for i in range(closest_idx, len(path) + closest_idx): # Handle wrap-around
             idx = i % len(path)
             dist = np.linalg.norm(path[idx, :2] - np.array([self.x, self.y]))
             if dist > LOOKAHEAD_DIST:
@@ -316,21 +291,24 @@ class DistFinder:
         
         steering_angle = math.atan2(2.0 * WHEELBASE_LEN * math.sin(alpha), actual_lookahead)
         
-        return steering_angle  # Return angle and target velocity
+        return steering_angle # Return angle and target velocity
 
-    def publish_path_viz(self, path):
+    def publish_selected_path(self, path):
         msg = Path()
         msg.header.frame_id = "map"
         msg.header.stamp = rospy.Time.now()
+        
         for pt in path:
             pose = PoseStamped()
             pose.pose.position.x = pt[0]
             pose.pose.position.y = pt[1]
             pose.pose.orientation.w = 1.0
             msg.poses.append(pose)
+            
         self.path_pub.publish(msg)
 
     def publish_all_paths(self, scan_data, selected_path):
+
         marker_array = MarkerArray()
 
         for i, (path, offset) in enumerate(self.candidate_paths):
@@ -342,7 +320,7 @@ class DistFinder:
             marker.type = Marker.LINE_STRIP
             marker.action = Marker.ADD
             marker.pose.orientation.w = 1.0
-            marker.scale.x = 0.05  # time width
+            marker.scale.x = 0.05 #time width
 
             # is_valid = self.check_path_validity(path, scan_data, ranges)
 
@@ -352,6 +330,7 @@ class DistFinder:
                 marker.color.b = 0.0
                 marker.color.a = 1.0
                 marker.scale.x = 0.1
+            
             # elif is_valid:
             #     marker.color.r = 0.0
             #     marker.color.g = 0.0
@@ -367,7 +346,6 @@ class DistFinder:
             closest_idx = np.argmin(dists)
             start_viz = max(0, closest_idx - 50)
             end_viz = min(len(path), closest_idx + 150)
-            
             for pt in path[start_viz:end_viz]:
                 p = Point()
                 p.x = pt[0]
@@ -378,6 +356,24 @@ class DistFinder:
             marker_array.markers.append(marker)
 
         self.marker_pub.publish(marker_array)
+
+    def publish_obstacle_marker(self, header, min_dist, angle):
+        p_x = min_dist * math.cos(angle)
+        p_y = min_dist * math.sin(angle)
+
+        marker = Marker()
+        marker.header = header
+        marker.ns = "closest_obstacle"
+        marker.id = 0
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+        marker.pose.position.x = p_x
+        marker.pose.position.y = p_y
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = 0.2; marker.scale.y = 0.2; marker.scale.z = 0.2
+        marker.color.a = 1.0; marker.color.r = 1.0 
+        
+        self.closest_pub.publish(marker)
 
 
 if __name__ == "__main__":
