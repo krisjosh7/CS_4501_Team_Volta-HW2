@@ -181,11 +181,13 @@ def purepursuit_control_node(data):
     x_rel = dx * math.cos(heading) + dy * math.sin(heading)
     y_rel = -dx * math.sin(heading) + dy * math.cos(heading)
 
-    alpha = math.atan2(y_rel, x_rel)
-    actual_lookahead_dist = math.sqrt(dx*dx + dy*dy)
+    ratio = y_rel/LOOKAHEAD_MAX
+    ratio = max(-1.0, min(1.0, ratio))
+    
+    alpha = math.asin(ratio)
     
     # Pure Pursuit Formula
-    steering_angle_rad = math.atan2(2.0 * WHEELBASE_LEN * math.sin(alpha), actual_lookahead_dist)
+    steering_angle_rad = math.atan2(2.0 * WHEELBASE_LEN * math.sin(alpha), LOOKAHEAD_MAX)
 
     # Clamp and Scale
     steering_angle_rad = max(-MAX_STEERING_ANGLE, min(MAX_STEERING_ANGLE, steering_angle_rad))
