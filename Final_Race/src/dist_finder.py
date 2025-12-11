@@ -30,6 +30,7 @@ class DistFinder:
         self.gap_pub = rospy.Publisher('/car_8/gap_info', Float32MultiArray, queue_size=1)
         self.path_pub = rospy.Publisher('/car_8/selected_path', Path, queue_size=1)
         self.marker_pub = rospy.Publisher('/car_8/debug_markers', MarkerArray, queue_size=1)
+        self.collision_pub = rospy.Publisher('/car_8/debug_collision', Marker, queue_size=1)
 
         # State
         self.x = 0.0
@@ -42,6 +43,8 @@ class DistFinder:
         # We generate multiple granular offsets to find a "valid" line that doesn"t hit the wall
         self.candidate_paths = [] 
         self.last_selected_offset = 0.0 # State for stability 
+        self.scan_count = 0 # For throttling viz
+        self.last_closest_index = 0 # State for windowed search
         
         self.load_and_generate_racelines()
         
@@ -138,20 +141,42 @@ class DistFinder:
         if len(self.candidate_paths) == 0:
             return
 
+        self.scan_count += 1
+
         # Preprocess ranges
         ranges = self.preprocess_lidar(data.ranges)
         
-        # Create a dummy data object to pass cleaned ranges to check functions
-        # (Or update valid check to take ranges directly)
+        # --- WINDOWED SEARCH OPTIMIZATION ---
+        # Find the closest point ONCE on the center line.
+        # Since all offsets are generated index-aligned, this index is valid for ALL paths.
         
-        # ... logic continues ...
+        min_dist_sq = float('inf')
+        closest_index = self.last_closest_index
+        
+        # Search Window: -10 to +50
+        start_search = self.last_closest_index - 10
+        end_search = self.last_closest_index + 50
+        
+        for i in range(start_search, end_search):
+            idx = i % len(self.center_line)
+            dx = self.x - self.center_line[idx][0]
+            dy = self.y - self.center_line[idx][1]
+            d_sq = dx*dx + dy*dy
+            if d_sq < min_dist_sq:
+                min_dist_sq = d_sq
+                closest_index = idx
+                
+        # Safety / Reset Check
+        if min_dist_sq > 25.0: # Lost? Global Search
+             dists = np.linalg.norm(self.center_line - np.array([self.x, self.y]), axis=1)
+             closest_index = np.argmin(dists)
+             
+        self.last_closest_index = closest_index
+        # ------------------------------------
 
         # 1. Check Collisions & Select Best Line
         # We iterate through candidates in order of priority (smallest offset first).
         # The first one that is "valid" (no collisions) is chosen.
-        
-        selected_path = None
-        selected_offset = 0.0
         
         selected_path = None
         selected_offset = 0.0
@@ -171,16 +196,17 @@ class DistFinder:
         path_0 = get_path_by_offset(0.0)
         path_last = get_path_by_offset(self.last_selected_offset)
         
-        if path_0 is not None and self.check_path_validity(path_0, data, ranges):
+        # Optimization: Pass the pre-calculated `closest_index` to validity check
+        if path_0 is not None and self.check_path_validity(path_0, data, ranges, closest_index):
              selected_path = path_0
              selected_offset = 0.0
-        elif path_last is not None and self.check_path_validity(path_last, data, ranges):
+        elif path_last is not None and self.check_path_validity(path_last, data, ranges, closest_index):
              selected_path = path_last
              selected_offset = self.last_selected_offset
         else:
             # Fallback to standard priority search
             for path, offset in self.candidate_paths:
-                if self.check_path_validity(path, data, ranges):
+                if self.check_path_validity(path, data, ranges, closest_index):
                     selected_path = path
                     selected_offset = offset
                     break
@@ -206,13 +232,12 @@ class DistFinder:
         self.publish_path_viz(selected_path)
         self.publish_all_paths(data, selected_path, ranges)
 
-    def check_path_validity(self, path, scan_data, ranges):
+    def check_path_validity(self, path, scan_data, ranges, closest_idx):
         # Find the closest point on the path to the car
         # Then check the next N meters of the path against the LiDAR
         
-        # 1. Find closest index
-        dists = np.linalg.norm(path[:, :2] - np.array([self.x, self.y]), axis=1)
-        closest_idx = np.argmin(dists)
+        # 1. Use the passed closest_idx (Windowed Search Result)
+        # No more global np.argmin -> Speed + Stability
         
         # 2. Check points ahead
         check_dist = 1.0 # Check 3 meters ahead
@@ -245,15 +270,33 @@ class DistFinder:
                 if 0 <= idx < len(ranges):
                     lidar_dist = ranges[idx]
                     
-                    # If LiDAR sees something closer than the path point (minus safety margin)
-                    # It means the path is blocked
-                    if lidar_dist < (r + 0.3): # 0.3m buffer
-                        # rospy.logwarn(f"Blocked at dist {lidar_dist:.2f} vs Path {r:.2f} (idx {idx})")
+                    # PROXIMITY CHECK (Tube Check)
+                    # Instead of checking if the view is blocked, check if the object 
+                    # is actually CLOSE to the path point coordinates.
+                    
+                    # 1. Coordinate of the Lidar Point (in car frame)
+                    # We know the angle (theta) and distance (lidar_dist)
+                    obs_x = lidar_dist * math.cos(theta)
+                    obs_y = lidar_dist * math.sin(theta)
+                    
+                    # 2. Coordinate of Path Point (in car frame)
+                    # x_local, y_local
+                    
+                    # 3. Distance between them
+                    dist_to_obs = math.sqrt((obs_x - x_local)**2 + (obs_y - y_local)**2)
+                    
+                    # 4. Collision Condition
+                    # If an object is within the path "tube" (e.g. car width/2 + margin)
+                    # Use 0.35m radius (Car width ~0.3m, so 0.15m half-width + 0.2m buffer)
+                    if dist_to_obs < 0.35: 
+                        rospy.logwarn("COLLISION from path!")
                         return False
             
             # Move to next point
-            dist_checked += np.linalg.norm(path[(curr_idx+1)%len(path), :2] - path[curr_idx, :2])
-            curr_idx = (curr_idx + 1) % len(path)
+            # Optimization: check every 2nd point to speed up loop
+            step_dist = np.linalg.norm(path[(curr_idx+1)%len(path), :2] - path[curr_idx, :2])
+            dist_checked += step_dist * 2.0 
+            curr_idx = (curr_idx + 2) % len(path)
             
         return True
 
@@ -302,6 +345,7 @@ class DistFinder:
         self.path_pub.publish(msg)
 
     def publish_all_paths(self, scan_data, selected_path, ranges):
+    def publish_all_paths(self, scan_data, selected_path, ranges):
         marker_array = MarkerArray()
 
         for i, (path, offset) in enumerate(self.candidate_paths):
@@ -315,7 +359,7 @@ class DistFinder:
             marker.pose.orientation.w = 1.0
             marker.scale.x = 0.05 #time width
 
-            is_valid = self.check_path_validity(path, scan_data, ranges)
+            is_valid = self.check_path_validity(path, scan_data, ranges, self.last_closest_index)
 
             if np.array_equal(path, selected_path):
                 marker.color.r = 0.0
@@ -339,7 +383,9 @@ class DistFinder:
             closest_idx = np.argmin(dists)
             start_viz = max(0, closest_idx - 50)
             end_viz = min(len(path), closest_idx + 150)
-            for pt in path[start_viz:end_viz]:
+            
+            # Downsample visualization points (Stride 5)
+            for pt in path[start_viz:end_viz:5]:
                 p = Point()
                 p.x = pt[0]
                 p.y = pt[1]
