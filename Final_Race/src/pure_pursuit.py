@@ -10,8 +10,8 @@ from geometry_msgs.msg import PolygonStamped, Point32, PoseStamped
 from nav_msgs.msg import Path, Odometry
 
 # --- TUNING PARAMETERS ---
-LOOKAHEAD_MIN = 0.5   # Minimum lookahead (meters) for low speeds
-LOOKAHEAD_MAX = 2.5   # Maximum lookahead (meters) for high speeds
+LOOKAHEAD_MIN = 1.5  # Minimum lookahead (meters) for low speeds
+LOOKAHEAD_MAX = 1.5  # Maximum lookahead (meters) for high speeds
 LOOKAHEAD_GAIN = 0.25 # Lookahead = Gain * Velocity
 WHEELBASE_LEN = 0.325
 STEERING_RANGE = 100.0 # Range [-100, 100] matches your servo setup
@@ -48,7 +48,7 @@ def construct_path():
     """
     file_path = os.path.expanduser('~/depend_ws/src/f1tenth_purepursuit/path/{}.csv'.format(trajectory_name))
     
-    rospy.loginfo(f"Loading path from: {file_path}")
+    rospy.loginfo("Loading path")
     
     try:
         with open(file_path) as csv_file:
@@ -59,7 +59,7 @@ def construct_path():
                 v = float(waypoint[2]) if len(waypoint) > 2 else 1.0
                 plan.append([x, y, v])
     except Exception as e:
-        rospy.logerr(f"Error loading CSV: {e}")
+        rospy.logerr("Error loading CSV")
         return
 
     # Create and publish the path for visualization (Rviz)
@@ -77,7 +77,7 @@ def construct_path():
         path_msg.poses.append(pose)
     
     path_pub.publish(path_msg)
-    rospy.loginfo(f"Path constructed with {len(plan)} waypoints.")
+    rospy.loginfo("Path constructed with {len(plan)} waypoints.")
 
 def odom_callback(data):
     """
@@ -193,8 +193,8 @@ def purepursuit_control_node(data):
 
     # Assign Velocity
 
-    max_speed = 30.0  # m/s, tune this
-    min_speed = 10.0  # m/s, tune this
+    max_speed = 60.0  # m/s, tune this
+    min_speed = 30.0  # m/s, tune this
     
     # Linearly scale speed based on the magnitude of the steering angle
     abs_steering = abs(command.steering_angle)
