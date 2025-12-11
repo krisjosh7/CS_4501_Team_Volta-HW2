@@ -8,26 +8,28 @@ from geometry_msgs.msg import PolygonStamped, Point32, PoseStamped
 from nav_msgs.msg import Path
 
 # --- TUNING CONFIGURATION ---
-STEERING_RANGE = 100.0           # Servo range
+STEERING_RANGE = 100.0           # Servo range [-100, 100]
 WHEELBASE_LEN = 0.325            # Vehicle wheelbase
 MAX_STEERING_ANGLE = 0.4189      # ~24 degrees (Physical Limit)
 
-# Speed Settings (Tune these for performance)
-# Increase MAX_SPEED if the car is stable. 
-MAX_SPEED = 6.0                 # Max speed on straights (m/s)
-MIN_SPEED = 2.0                  # Min speed in sharp corners (m/s)
-SPEED_GAIN = 5.0                 # Brake Aggressiveness: Higher = Brake harder when turning
+# --- SPEED SETTINGS (Steering Angle Based) ---
+MAX_SPEED = 50.0                 # Max speed on straights
+MIN_SPEED = 10.0                 # Minimum speed to maintain momentum in corners
 
-# Lookahead Settings (Tune for stability)
+# Cornering Aggression: 0.0 = No slowdown, 1.0 = Stop completely at full turn
+# 0.5 means: At full steering lock, drop speed by 50% (to 25.0)
+CORNERING_AGGRESSION = 0.5       
+
+# --- LOOKAHEAD SETTINGS (Velocity Based) ---
+# Higher speeds require looking further ahead to prevent oscillation
 LOOKAHEAD_GAIN = 0.4             # Lookahead = Velocity * Gain
-MIN_LOOKAHEAD = 1.0              # Minimum lookahead distance
-MAX_LOOKAHEAD = 3.0              # Maximum lookahead distance
+MIN_LOOKAHEAD = 1.5              # Minimum lookahead distance
+MAX_LOOKAHEAD = 4.0              # Cap lookahead so we don't cut corners too much
 
 # --- GLOBALS ---
 plan = []
 car_name = str(sys.argv[1])
-# We keep this argument to prevent rosrun errors, but the path comes dynamically
-trajectory_name = str(sys.argv[2]) 
+trajectory_name = str(sys.argv[2]) # Kept for arg compatibility
 
 wp_seq = 0
 last_closest_index = 0 
@@ -60,7 +62,7 @@ def purepursuit_control_node(data):
                   data.pose.orientation.z, data.pose.orientation.w)
     heading = tf.transformations.euler_from_quaternion(quaternion)[2]
 
-    # 2. Find Closest Point (Windowed Search)
+    # 2. Find Closest Point (Windowed Search + Circular Logic)
     min_dist_sq = float('inf')
     closest_index = last_closest_index
     
@@ -93,11 +95,10 @@ def purepursuit_control_node(data):
     pose_x = plan[closest_index][0]
     pose_y = plan[closest_index][1]
     
-    # 3. Dynamic Lookahead Calculation
+    # 3. Dynamic Lookahead Calculation (For Steering Stability)
     # Get current velocity (if available, else assume slow)
-    current_vel = data.twist.linear.x if hasattr(data, 'twist') else 2.0
+    current_vel = data.twist.linear.x if hasattr(data, 'twist') else 5.0
     
-    # Formula: Farther lookahead at higher speeds prevents wobbling
     calculated_lookahead = current_vel * LOOKAHEAD_GAIN
     lookahead = max(MIN_LOOKAHEAD, min(MAX_LOOKAHEAD, calculated_lookahead))
 
@@ -132,11 +133,23 @@ def purepursuit_control_node(data):
     command = AckermannDrive()
     command.steering_angle = (steering_angle_rad / MAX_STEERING_ANGLE) * STEERING_RANGE
     
-    # 8. Continuous Velocity Scaling
-    # Linearly decrease speed as steering increases
-    speed_penalty = abs(steering_angle_rad) * SPEED_GAIN
-    target_speed = MAX_SPEED - speed_penalty
+    # 8. VELOCITY SCALING (Based on Steering Angle)
+    current_steer = abs(steering_angle_rad)
     
+    # Ignore tiny jitters (less than ~3 degrees) for max speed
+    if current_steer > 0.05: 
+        # Calculate ratio: 0.0 (straight) to 1.0 (full turn)
+        steer_ratio = current_steer / MAX_STEERING_ANGLE
+        
+        # Apply drop factor
+        # e.g. If Aggression is 0.5 and Ratio is 1.0 (full turn) -> Drop speed by 50%
+        speed_drop_factor = steer_ratio * CORNERING_AGGRESSION
+        
+        target_speed = MAX_SPEED * (1.0 - speed_drop_factor)
+    else:
+        target_speed = MAX_SPEED
+
+    # Ensure we don't drop below minimum speed
     command.speed = max(MIN_SPEED, target_speed)
 
     command_pub.publish(command)
