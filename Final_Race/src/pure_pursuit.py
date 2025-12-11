@@ -5,239 +5,210 @@ import sys
 import csv
 import math
 import tf
+import numpy as np
 from ackermann_msgs.msg import AckermannDrive
 from geometry_msgs.msg import PolygonStamped, Point32, PoseStamped
 from nav_msgs.msg import Path, Odometry
+from visualization_msgs.msg import Marker 
+from std_msgs.msg import Bool
 
 # --- TUNING PARAMETERS ---
-LOOKAHEAD_MIN = 1.5  # Minimum lookahead (meters) for low speeds
-LOOKAHEAD_MAX = 1.5  # Maximum lookahead (meters) for high speeds
-LOOKAHEAD_GAIN = 0.25 # Lookahead = Gain * Velocity
+# CRITICAL: Keep LOOKAHEAD_MIN high enough (1.0m+) to prevent oscillation
+LOOKAHEAD_MIN = 1.0   
+LOOKAHEAD_MAX = 3.0   
+
+# Velocity Factor: Speed (approx 45) * 0.035 = ~1.5m lookahead
+# Lower this if it cuts corners too much. Raise it if it wobbles on straights.
+LOOKAHEAD_GAIN = 0.035 
+
 WHEELBASE_LEN = 0.325
-STEERING_RANGE = 100.0 # Range [-100, 100] matches your servo setup
-MAX_STEERING_ANGLE = 0.4189 # ~24 degrees (Matches your control.py limit)
+STEERING_RANGE = 100.0 
+MAX_STEERING_ANGLE = 0.4189 
 
-# --- GLOBAL VARIABLES ---
-plan = []               # [x, y, velocity]
-frame_id = 'map'
-try:
-    car_name = str(sys.argv[1])
-    trajectory_name = str(sys.argv[2])
-except IndexError:
-    # Fallback defaults if args aren't provided
-    car_name = "car_8"
-    trajectory_name = "optimal_raceline"
+# Speed Output Settings
+SPEED_MAX = 65.0 # Straights
+SPEED_MIN = 25.0 # Corners
 
-# State variables
-current_velocity = 0.0
-wp_seq = 0
-control_polygon = PolygonStamped()
-
-# WAYPOINT TRACKING STATE (The Fix)
-last_closest_index = 0 
-
-# Publishers
-command_pub = rospy.Publisher('/{}/offboard/command'.format(car_name), AckermannDrive, queue_size=1)
-polygon_pub = rospy.Publisher('/{}/purepursuit_control/visualize'.format(car_name), PolygonStamped, queue_size=1)
-path_pub    = rospy.Publisher('/{}/purepursuit_control/path'.format(car_name), Path, queue_size=1, latch=True)
-
-def construct_path():
-    """ 
-    Loads the trajectory CSV. 
-    Expects format: [x, y, velocity] 
-    """
-    file_path = os.path.expanduser('~/depend_ws/src/f1tenth_purepursuit/path/{}.csv'.format(trajectory_name))
-    
-    rospy.loginfo("Loading path")
-    
-    try:
-        with open(file_path) as csv_file:
-            csv_reader = csv.reader(csv_file, delimiter=',')
-            for waypoint in csv_reader:
-                x = float(waypoint[0])
-                y = float(waypoint[1])
-                v = float(waypoint[2]) if len(waypoint) > 2 else 1.0
-                plan.append([x, y, v])
-    except Exception as e:
-        rospy.logerr("Error loading CSV")
-        return
-
-    # Create and publish the path for visualization (Rviz)
-    path_msg = Path()
-    path_msg.header.frame_id = frame_id
-    path_msg.header.stamp = rospy.Time.now()
-    
-    for waypoint in plan:
-        pose = PoseStamped()
-        pose.header.frame_id = frame_id
-        pose.header.stamp = path_msg.header.stamp
-        pose.pose.position.x = waypoint[0]
-        pose.pose.position.y = waypoint[1]
-        pose.pose.orientation.w = 1.0
-        path_msg.poses.append(pose)
-    
-    path_pub.publish(path_msg)
-    rospy.loginfo("Path constructed with {len(plan)} waypoints.")
-
-def odom_callback(data):
-    """
-    Updates the current velocity of the car.
-    """
-    global current_velocity
-    current_velocity = data.twist.twist.linear.x
-
-def purepursuit_control_node(data):
-    global wp_seq
-    global current_velocity
-    global last_closest_index # Access the tracking variable
-    
-    if not plan:
-        return
-
-    command = AckermannDrive()
-    
-    # 1. Obtain current position
-    odom_x = data.pose.position.x
-    odom_y = data.pose.position.y
-    
-    # Calculate heading angle (yaw)
-    heading = tf.transformations.euler_from_quaternion((
-        data.pose.orientation.x,
-        data.pose.orientation.y,
-        data.pose.orientation.z,
-        data.pose.orientation.w
-    ))[2]
-
-    # --- STEP 2: FIND CLOSEST POINT (WINDOWED SEARCH FIX) ---
-    
-    min_dist_sq = float('inf')
-    closest_index = last_closest_index
-    
-    # Search Window: Look 10 points behind and 50 points ahead of previous location.
-    # This prevents jumping to the wrong part of the track.
-    search_start = last_closest_index - 10
-    search_end = last_closest_index + 50
-    
-    for i in range(search_start, search_end):
-        idx = i % len(plan) # Handle wrap-around (Start/Finish line)
-        
-        dx = odom_x - plan[idx][0]
-        dy = odom_y - plan[idx][1]
-        dist_sq = dx*dx + dy*dy
-        
-        if dist_sq < min_dist_sq:
-            min_dist_sq = dist_sq
-            closest_index = idx
-
-    # SAFETY CHECK: If we are "lost" (closest point is too far), do a global search
-    # This handles manual resets in simulation or startup.
-    if min_dist_sq > 10.0: # If closest point is > 3.16m away
-        rospy.logwarn("Waypoint lost! Performing global search reset.")
-        min_dist_sq = float('inf')
-        for i in range(len(plan)):
-            dx = odom_x - plan[i][0]
-            dy = odom_y - plan[i][1]
-            dist_sq = dx*dx + dy*dy
-            if dist_sq < min_dist_sq:
-                min_dist_sq = dist_sq
-                closest_index = i
-    
-    # Update state for next iteration
-    last_closest_index = closest_index
-    
-    pose_x = plan[closest_index][0]
-    pose_y = plan[closest_index][1]
-
-    # --- STEP 3: DYNAMIC LOOKAHEAD ---
-    lookahead_distance = LOOKAHEAD_GAIN * current_velocity
-    lookahead_distance = max(LOOKAHEAD_MIN, min(lookahead_distance, LOOKAHEAD_MAX))
-
-    # --- STEP 4: FIND GOAL POINT ---
-    # Start searching forward from the closest index
-    target_index = closest_index
-    found_target = False
-    
-    for i in range(closest_index, closest_index + len(plan)):
-        idx = i % len(plan)
-        dist = math.sqrt((plan[idx][0] - odom_x)**2 + (plan[idx][1] - odom_y)**2)
-        if dist > lookahead_distance:
-            target_index = idx
-            found_target = True
-            break
-            
-    # If we didn't find a point far enough (e.g. end of track without loop), take the last one
-    if not found_target:
-        target_index = (closest_index + 5) % len(plan) # Just look a bit ahead
-    
-    target_x = plan[target_index][0]
-    target_y = plan[target_index][1]
-    target_v = plan[target_index][2]
-
-    # --- STEP 5: CALCULATE STEERING ---
-    # Transform target to vehicle frame
-    dx = target_x - odom_x
-    dy = target_y - odom_y
-    
-    x_rel = dx * math.cos(heading) + dy * math.sin(heading)
-    y_rel = -dx * math.sin(heading) + dy * math.cos(heading)
-
-    alpha = math.atan2(y_rel, x_rel)
-    actual_lookahead_dist = math.sqrt(dx*dx + dy*dy)
-    
-    # Pure Pursuit Formula
-    steering_angle_rad = math.atan2(2.0 * WHEELBASE_LEN * math.sin(alpha), actual_lookahead_dist)
-
-    # Clamp and Scale
-    steering_angle_rad = max(-MAX_STEERING_ANGLE, min(MAX_STEERING_ANGLE, steering_angle_rad))
-    command.steering_angle = (steering_angle_rad / MAX_STEERING_ANGLE) * STEERING_RANGE
-
-    # Assign Velocity
-
-    max_speed = 60.0  # m/s, tune this
-    min_speed = 30.0  # m/s, tune this
-    
-    # Linearly scale speed based on the magnitude of the steering angle
-    abs_steering = abs(command.steering_angle)
-    command.speed = max_speed - (abs_steering / STEERING_RANGE) * (max_speed - min_speed)
-
-    # command.speed = target_v
-
-    command_pub.publish(command)
-
-    # --- VISUALIZATION ---
-    base_link = Point32()
-    nearest_pose = Point32()
-    nearest_goal = Point32()
-    
-    base_link.x = odom_x
-    base_link.y = odom_y
-    nearest_pose.x = pose_x
-    nearest_pose.y = pose_y
-    nearest_goal.x = target_x
-    nearest_goal.y = target_y
-    
-    control_polygon.header.frame_id = frame_id
-    control_polygon.polygon.points = [nearest_pose, base_link, nearest_goal]
-    control_polygon.header.seq = wp_seq
-    control_polygon.header.stamp = rospy.Time.now()
-    wp_seq += 1
-    polygon_pub.publish(control_polygon)
-
-if __name__ == '__main__':
-    try:
+class PurePursuit:
+    def __init__(self):
         rospy.init_node('pure_pursuit', anonymous=True)
-        
-        if not plan:
-            rospy.loginfo('Obtaining trajectory...')
-            construct_path()
 
-        # Subscriber for Pose (Localization)
-        rospy.Subscriber('/{}/particle_filter/viz/inferred_pose'.format(car_name), PoseStamped, purepursuit_control_node)
-        
-        # Subscriber for Velocity (Odometry)
-        rospy.Subscriber('/{}/odom'.format(car_name), Odometry, odom_callback)
-        
+        # --- ARGS ---
+        try:
+            self.car_name = str(sys.argv[1])
+            self.trajectory_name = str(sys.argv[2])
+        except IndexError:
+            self.car_name = "car_8"
+            self.trajectory_name = "base_map_3_raceline"
+
+        # --- STATE ---
+        self.plan = []
+        self.last_closest_index = 0
+        self.avg_velocity = 0.0 # <--- THE FIX: Smoothed velocity
+        self.safety_override = False
+
+        # --- ROS TOPICS ---
+        self.command_pub = rospy.Publisher(f'/{self.car_name}/offboard/command', AckermannDrive, queue_size=1)
+        self.polygon_pub = rospy.Publisher(f'/{self.car_name}/purepursuit_control/visualize', PolygonStamped, queue_size=1)
+        self.marker_pub  = rospy.Publisher(f'/{self.car_name}/purepursuit_control/target_marker', Marker, queue_size=1)
+        self.path_pub    = rospy.Publisher(f'/{self.car_name}/purepursuit_control/path', Path, queue_size=1, latch=True)
+
+        # Subscribers
+        rospy.Subscriber(f'/{self.car_name}/particle_filter/viz/inferred_pose', PoseStamped, self.control_callback)
+        rospy.Subscriber(f'/{self.car_name}/odom', Odometry, self.odom_callback)
+        rospy.Subscriber(f'/{self.car_name}/safety_override', Bool, self.safety_callback)
+
+        self.construct_path()
         rospy.spin()
 
-    except rospy.ROSInterruptException:
-        pass
+    def safety_callback(self, msg):
+        self.safety_override = msg.data
+
+    def odom_callback(self, data):
+        # SMOOTHING LOGIC:
+        # Instead of taking raw speed, we blend it: 80% old average, 20% new reading
+        raw_speed = data.twist.twist.linear.x
+        self.avg_velocity = (0.8 * self.avg_velocity) + (0.2 * raw_speed)
+
+    def construct_path(self):
+        # Load CSV
+        home = os.path.expanduser('~')
+        paths = [
+            f"{home}/depend_ws/src/f1tenth_purepursuit/path/{self.trajectory_name}.csv",
+            f"{home}/catkin_ws/src/f1tenth_purepursuit/path/{self.trajectory_name}.csv",
+            f"{self.trajectory_name}.csv"
+        ]
+        file_path = ""
+        for p in paths:
+            if os.path.exists(p):
+                file_path = p; break
+        
+        if not file_path:
+            rospy.logerr("CSV Not Found!"); return
+
+        with open(file_path) as f:
+            reader = csv.reader(f)
+            for row in reader:
+                self.plan.append([float(row[0]), float(row[1])])
+        
+        # Publish Path Viz
+        msg = Path()
+        msg.header.frame_id = "map"
+        msg.header.stamp = rospy.Time.now()
+        for p in self.plan:
+            ps = PoseStamped()
+            ps.pose.position.x = p[0]; ps.pose.position.y = p[1]; ps.pose.orientation.w=1.0
+            msg.poses.append(ps)
+        self.path_pub.publish(msg)
+
+    def control_callback(self, data):
+        # 1. Safety Check
+        if self.safety_override or not self.plan:
+            return
+
+        # 2. Car State
+        ox = data.pose.position.x
+        oy = data.pose.position.y
+        # Quat -> Yaw
+        q = data.pose.orientation
+        heading = tf.transformations.euler_from_quaternion((q.x, q.y, q.z, q.w))[2]
+
+        # 3. Find Closest Point (Windowed)
+        min_dist_sq = float('inf')
+        closest_idx = self.last_closest_index
+        path_len = len(self.plan)
+        
+        # Search -10 to +50 points
+        for i in range(self.last_closest_index - 10, self.last_closest_index + 50):
+            idx = i % path_len
+            dx = ox - self.plan[idx][0]
+            dy = oy - self.plan[idx][1]
+            d_sq = dx*dx + dy*dy
+            if d_sq < min_dist_sq:
+                min_dist_sq = d_sq
+                closest_idx = idx
+        
+        # Failsafe: If lost (>3m away), search whole track
+        if min_dist_sq > 9.0:
+            for i in range(path_len):
+                dx = ox - self.plan[i][0]; dy = oy - self.plan[i][1]
+                d_sq = dx*dx + dy*dy
+                if d_sq < min_dist_sq:
+                    min_dist_sq = d_sq; closest_idx = i
+                    
+        self.last_closest_index = closest_idx
+
+        # 4. Dynamic Lookahead (USING SMOOTHED VELOCITY)
+        lookahead = self.avg_velocity * LOOKAHEAD_GAIN
+        lookahead = max(LOOKAHEAD_MIN, min(lookahead, LOOKAHEAD_MAX))
+
+        # 5. Find Target Point
+        target_idx = closest_idx
+        found = False
+        
+        for i in range(closest_idx, closest_idx + path_len):
+            idx = i % path_len
+            dx = self.plan[idx][0] - ox
+            dy = self.plan[idx][1] - oy
+            dist = math.sqrt(dx*dx + dy*dy)
+            if dist > lookahead:
+                # Geometric Check: Is this point actually in front of us?
+                # Transform to local frame
+                lx = dx * math.cos(heading) + dy * math.sin(heading)
+                if lx > 0: # Only accept points in front
+                    target_idx = idx
+                    found = True
+                    break
+        
+        if not found:
+            target_idx = (closest_idx + 15) % path_len
+            
+        tx = self.plan[target_idx][0]
+        ty = self.plan[target_idx][1]
+
+        # 6. Calculate Steering
+        dx = tx - ox
+        dy = ty - oy
+        
+        # Transform to Vehicle Frame
+        x_rel = dx * math.cos(heading) + dy * math.sin(heading)
+        y_rel = -dx * math.sin(heading) + dy * math.cos(heading)
+        
+        alpha = math.atan2(y_rel, x_rel)
+        L = math.sqrt(dx*dx + dy*dy)
+        
+        steer_rad = math.atan2(2.0 * WHEELBASE_LEN * math.sin(alpha), L)
+        steer_rad = max(-MAX_STEERING_ANGLE, min(MAX_STEERING_ANGLE, steer_rad))
+        
+        # Output Command
+        cmd = AckermannDrive()
+        cmd.steering_angle = (steer_rad / MAX_STEERING_ANGLE) * STEERING_RANGE
+        
+        # 7. Speed Logic (Threshold)
+        turn_intensity = abs(cmd.steering_angle) / STEERING_RANGE
+        if turn_intensity < 0.15:
+            cmd.speed = SPEED_MAX
+        elif turn_intensity < 0.4:
+            cmd.speed = (SPEED_MAX + SPEED_MIN) / 2
+        else:
+            cmd.speed = SPEED_MIN
+            
+        self.command_pub.publish(cmd)
+        
+        # 8. Visualization
+        self.publish_viz(ox, oy, tx, ty)
+
+    def publish_viz(self, ox, oy, tx, ty):
+        # Red Sphere Target
+        marker = Marker()
+        marker.header.frame_id = "map"
+        marker.header.stamp = rospy.Time.now()
+        marker.type = Marker.SPHERE; marker.action = Marker.ADD
+        marker.pose.position.x = tx; marker.pose.position.y = ty
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = 0.5; marker.scale.y = 0.5; marker.scale.z = 0.5
+        marker.color.a = 1.0; marker.color.r = 1.0
+        self.marker_pub.publish(marker)
+
+if __name__ == '__main__':
+    PurePursuit()
